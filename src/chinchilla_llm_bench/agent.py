@@ -151,6 +151,5 @@ class _ErrorResult:
         self.completion_tokens = 0
         self.duration = 0.0
         self.ttfr = None
-        self.token_times = []
         self.prompt_tokens = prompt_tokens
         self.text = ""

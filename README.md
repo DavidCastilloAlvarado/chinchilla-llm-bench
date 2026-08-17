@@ -27,10 +27,7 @@ semantics: `--n` = repetitions, total requests = `n × c`):
 
 | column | meaning |
 |--------|---------|
-| `t/s (total)` | aggregate tokens/s measured during each request's active window (all agents combined), mean ± std over requests. pp counts the *prompt* tokens (processed by ttfr); tg counts generated tokens. For `c=1` this is close to `t/s (req)` |
-| `t/s (req)` | per-request throughput (pp: prompt tokens / ttfr · tg: generated tokens / duration), mean ± std |
-| `peak t/s` | peak of the aggregate token stream during each request's window, mean ± std (tg only) |
-| `peak t/s (req)` | peak per-request rate over a 0.5 s sliding window, mean ± std (tg only) |
+| `t/s (req)` | per-request throughput, computed from the server's own token counts (usage chunk) — pp: prompt tokens / ttfr, tg: generated tokens / duration. Mean ± std over requests. This is the only t/s column: it is robust to how the server batches SSE chunks (one chunk can carry several tokens, which makes chunk-based "total"/"peak" rates unreliable) |
 | `ttfr (ms)` | time to first token, mean ± std (pp only) |
 | `est_ppt (ms)` | estimated pure prompt-processing time = `ttfr − baseline`, where baseline is the *minimum* ttfr of three 1-token prompts measured after a warm-up (pp only) |
 | `e2e_ttft (ms)` | end-to-end time to first token as seen by the client (pp only) |
@@ -106,10 +103,10 @@ The run ends with the settings summary and the results table printed to the
 terminal, plus a markdown copy written to `model_result_<model>.txt`:
 
 ```
-| model             |       test |       t/s (total) |         t/s (req) |      peak t/s |   peak t/s (req) |       ttfr (ms) |    est_ppt (ms) |   e2e_ttft (ms) |
-|:------------------|-----------:|------------------:|------------------:|--------------:|-----------------:|----------------:|----------------:|----------------:|
-| qwen3.8-27b-nvfp4 | pp200 (c1) | 4448.64 ± 1603.51 | 4448.64 ± 1603.51 |               |                  |  144.27 ± 19.48 |   40.72 ± 19.48 |  144.27 ± 19.48 |
-| qwen3.8-27b-nvfp4 | tg128 (c1) |      66.83 ± 5.13 |      66.83 ± 5.13 |  71.00 ± 4.24 |     71.00 ± 4.24 |                 |                 |                 |
+| model             |       test |        t/s (req) |      ttfr (ms) |    est_ppt (ms) |   e2e_ttft (ms) |
+|:------------------|-----------:|-----------------:|---------------:|----------------:|----------------:|
+| qwen3.8-27b-nvfp4 | pp200 (c1) | 4448.64 ± 1603.51 | 144.27 ± 19.48 |  40.72 ± 19.48 | 144.27 ± 19.48 |
+| qwen3.8-27b-nvfp4 | tg128 (c1) |     66.83 ± 5.13 |                |                |                |
 ```
 
 ## Project layout
@@ -123,7 +120,7 @@ src/chinchilla_llm_bench/
 ├── agent.py    # one worker thread = one swarm card
 ├── ui.py       # rich Live swarm grid + top bar + key handling
 ├── runner.py   # sweep orchestration: preflight, baseline, pp/tg phases
-├── stats.py    # mean±std, sliding-window peak, phase aggregation
+├── stats.py    # mean±std, live rate trackers, phase aggregation
 └── report.py   # rich table (console) + markdown table (file)
 tests/          # pytest suite with a mock vLLM server
 ```

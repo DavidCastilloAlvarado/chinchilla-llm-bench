@@ -11,10 +11,7 @@ from .stats import fmt_mean_std, fmt_ms_mean_std
 COLUMNS = [
     "model",
     "test",
-    "t/s (total)",
     "t/s (req)",
-    "peak t/s",
-    "peak t/s (req)",
     "ttfr (ms)",
     "est_ppt (ms)",
     "e2e_ttft (ms)",
@@ -22,9 +19,11 @@ COLUMNS = [
 
 
 def build_rows(config: BenchConfig, phases: list[PhaseResult]) -> list[list[str]]:
-    """One row per (test, concurrency) phase, matching the reference layout:
+    """One row per (test, concurrency) phase.
 
-    pp rows fill ttfr/est_ppt/e2e_ttft; tg rows fill the peak columns.
+    ``t/s (req)`` is the only throughput column: per-request tokens/second
+    computed from the server's own token counts (prompt tokens / ttfr for pp,
+    generated tokens / duration for tg). pp rows fill ttfr/est_ppt/e2e_ttft.
     """
     rows: list[list[str]] = []
     for pr in phases:
@@ -36,10 +35,7 @@ def build_rows(config: BenchConfig, phases: list[PhaseResult]) -> list[list[str]
                 [
                     config.model,
                     label,
-                    fmt_mean_std(*s.total_tps),
                     fmt_mean_std(*s.req_tps),
-                    "",
-                    "",
                     fmt_ms_mean_std(*s.ttfr),
                     fmt_ms_mean_std(*s.est_ppt),
                     fmt_ms_mean_std(*s.e2e_ttft),
@@ -50,10 +46,7 @@ def build_rows(config: BenchConfig, phases: list[PhaseResult]) -> list[list[str]
                 [
                     config.model,
                     label,
-                    fmt_mean_std(*s.total_tps),
                     fmt_mean_std(*s.req_tps),
-                    fmt_mean_std(*s.peak_total),
-                    fmt_mean_std(*s.peak_req),
                     "",
                     "",
                     "",

@@ -31,7 +31,7 @@ def test_phase_stats_are_sane(mock_server):
     assert pp1.stats.n_ok == 3
     assert pp1.stats.n_failed == 0
     assert pp1.stats.total_tokens == 3 * 10  # 3 requests x 10 prompt tokens
-    assert pp1.stats.total_tps[0] > 0
+    assert pp1.stats.req_tps[0] > 0
     assert pp1.stats.ttfr[0] > 0
     assert pp1.stats.est_ppt[0] >= 0
 
@@ -39,8 +39,6 @@ def test_phase_stats_are_sane(mock_server):
     assert tg1.stats.n_ok == 3
     assert tg1.stats.total_tokens == 3 * 8
     assert tg1.stats.req_tps[0] > 0
-    assert tg1.stats.peak_req[0] > 0
-    assert tg1.stats.peak_total[0] >= tg1.stats.peak_req[0] * 0.5
 
 
 def test_agents_reused_across_phases(mock_server):

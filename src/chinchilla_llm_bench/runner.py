@@ -13,12 +13,8 @@ from .stats import (
     PhaseStats,
     RequestStats,
     mean_std,
-    peak_rate,
-    window_rate,
 )
 from .ui import SwarmUI
-
-_WINDOW_PAD = 0.05  # seconds of slack around each request's active window
 
 
 @dataclass
@@ -173,10 +169,6 @@ class BenchRunner:
             f"== {label}: {c} agent(s) x {cfg.n} reps = {c * cfg.n} requests =="
         )
 
-        # (t since phase start, agent idx, n_tokens) — weighted so the pp
-        # test can count its prompt tokens as "processed" at ttfr time.
-        arrivals: list[tuple[float, int, int]] = []
-        arrivals_lock = threading.Lock()
         phase_reqs: list[RequestStats] = []
         phase_reqs_lock = threading.Lock()
         t_phase0 = time.perf_counter()
@@ -187,11 +179,6 @@ class BenchRunner:
             def on_token(text: str, t_rel: float, kind: str = "content"):
                 self.ui.on_token()
                 agent.add_token(text, kind)
-                if test != "pp":
-                    with arrivals_lock:
-                        # t_rel is request-relative; the rate windows below are
-                        # phase-relative, so convert before storing.
-                        arrivals.append((t_start + t_rel, agent.idx, 1))
 
             result = stream_chat(
                 cfg.base_url,
@@ -215,7 +202,6 @@ class BenchRunner:
                 completion_tokens=result.completion_tokens,
                 ttfr=result.ttfr,
                 duration=result.duration,
-                token_times=result.token_times,
                 start_offset=t_start,
                 end_offset=t_end,
                 error=result.error,
@@ -251,7 +237,7 @@ class BenchRunner:
         for agent in agents:
             agent.join()
 
-        stats = self._summarize(test, c, phase_reqs, arrivals, phase_seconds)
+        stats = self._summarize(test, c, phase_reqs, phase_seconds)
         self.phases.append(PhaseResult(test, c, stats, phase_reqs))
         self.ui.log(
             f"== {label} done in {phase_seconds:.2f}s "
@@ -264,47 +250,25 @@ class BenchRunner:
         test: str,
         c: int,
         phase_reqs: list[RequestStats],
-        arrivals: list[tuple[float, int, int]],
         phase_seconds: float,
     ) -> PhaseStats:
         ok = [r for r in phase_reqs if r.ok]
         n_failed = len(phase_reqs) - len(ok)
 
-        # Aggregate stream as (time, n_tokens). For pp, the "tokens" the
-        # server processes are the *prompt* tokens, all of them done by the
-        # ttfr moment (the model only generates 1 token, which is noise).
-        stream: list[tuple[float, int]] = [(t, n) for (t, _a, n) in arrivals]
-        if test == "pp":
-            for r in ok:
-                if r.ttfr is not None:
-                    stream.append((r.start_offset + r.ttfr, r.prompt_tokens))
-
-        # Per-request "total" rate: aggregate (all agents) tokens during the
-        # request's active window. For c=1 this equals the per-request rate.
-        total_rates = [
-            window_rate(stream, r.start_offset - _WINDOW_PAD, r.end_offset + _WINDOW_PAD)
-            for r in ok
-        ]
-        # Per-request own rate.
+        # Per-request rate from the server's own token counts (usage chunk):
+        # pp = prompt tokens / ttfr, tg = generated tokens / duration. This is
+        # the only t/s figure that is robust to how the server batches SSE
+        # chunks (one chunk can carry several tokens).
         if test == "pp":
             req_rates = [r.prompt_tokens / r.ttfr for r in ok if r.ttfr]
             ttfr_vals = [r.ttfr for r in ok if r.ttfr is not None]
             est_vals = [max(0.0, v - self._baseline_ttfr) for v in ttfr_vals]
             e2e_vals = ttfr_vals
-            peak_total_vals: list[float] = []
-            peak_req_vals: list[float] = []
         else:
             req_rates = [r.completion_tokens / r.duration for r in ok if r.duration > 0]
             ttfr_vals = []
             est_vals = []
             e2e_vals = []
-            peak_req_vals = [peak_rate(r.token_times) for r in ok]
-            peak_total_vals = []
-            for r in ok:
-                t0 = r.start_offset - _WINDOW_PAD
-                t1 = r.end_offset + _WINDOW_PAD
-                window_times = [t for (t, _n) in stream if t0 <= t <= t1]
-                peak_total_vals.append(peak_rate(window_times))
 
         total_tokens = (
             sum(r.prompt_tokens for r in ok)
@@ -319,10 +283,7 @@ class BenchRunner:
             n_failed=n_failed,
             total_tokens=total_tokens,
             phase_seconds=phase_seconds,
-            total_tps=mean_std(total_rates),
             req_tps=mean_std(req_rates),
-            peak_total=mean_std(peak_total_vals),
-            peak_req=mean_std(peak_req_vals),
             ttfr=mean_std(ttfr_vals),
             est_ppt=mean_std(est_vals),
             e2e_ttft=mean_std(e2e_vals),

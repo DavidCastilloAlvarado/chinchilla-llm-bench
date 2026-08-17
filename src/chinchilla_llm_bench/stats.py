@@ -27,31 +27,6 @@ def fmt_ms_mean_std(mean_s: float, std_s: float) -> str:
     return f"{mean_s * 1000:.2f} ± {std_s * 1000:.2f}"
 
 
-def peak_rate(times: Sequence[float], window: float = 0.5) -> float:
-    """Peak tokens/sec over a sliding ``window`` across sorted arrival times."""
-    if len(times) < 2:
-        return 0.0
-    best = 0.0
-    j = 0
-    for i in range(1, len(times)):
-        while times[i] - times[j] > window:
-            j += 1
-        if j >= i:
-            continue
-        dt = times[i] - times[j]
-        if dt > 1e-9:
-            best = max(best, (i - j) / dt)
-    return best
-
-
-def window_rate(arrivals: Sequence[tuple[float, float]], t0: float, t1: float) -> float:
-    """Aggregate tokens/sec over ``[t0, t1]`` from entries of ``(time, n_tokens)``."""
-    if t1 - t0 <= 1e-9:
-        return 0.0
-    tokens = sum(n for (t, n) in arrivals if t0 <= t <= t1)
-    return tokens / (t1 - t0)
-
-
 class RateTracker:
     """Trailing-window count rate over timestamps (thread-safe)."""
 
@@ -130,7 +105,6 @@ class RequestStats:
     completion_tokens: int
     ttfr: float | None
     duration: float
-    token_times: list[float] = field(default_factory=list)
     start_offset: float = 0.0  # seconds since phase start
     end_offset: float = 0.0  # seconds since phase start
     error: str | None = None
@@ -150,10 +124,7 @@ class PhaseStats:
     n_failed: int
     total_tokens: int
     phase_seconds: float
-    total_tps: tuple[float, float]  # (mean, std) aggregate t/s
     req_tps: tuple[float, float]  # (mean, std) per-request t/s
-    peak_total: tuple[float, float]
-    peak_req: tuple[float, float]
     ttfr: tuple[float, float]  # seconds
     est_ppt: tuple[float, float]  # seconds
     e2e_ttft: tuple[float, float]  # seconds

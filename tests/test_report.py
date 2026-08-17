@@ -22,10 +22,7 @@ def _phase(test: str, c: int) -> PhaseResult:
             n_failed=0,
             total_tokens=1000,
             phase_seconds=1.0,
-            total_tps=(4448.64, 1603.51),
-            req_tps=(4448.64, 1603.51),
-            peak_total=(0.0, 0.0),
-            peak_req=(0.0, 0.0),
+            req_tps=(892.88, 2.82),
             ttfr=(0.14427, 0.01948),
             est_ppt=(0.04072, 0.01948),
             e2e_ttft=(0.14427, 0.01948),
@@ -38,15 +35,23 @@ def _phase(test: str, c: int) -> PhaseResult:
             n_failed=0,
             total_tokens=640,
             phase_seconds=9.6,
-            total_tps=(66.83, 5.13),
             req_tps=(66.83, 5.13),
-            peak_total=(71.00, 4.24),
-            peak_req=(71.00, 4.24),
             ttfr=(0.0, 0.0),
             est_ppt=(0.0, 0.0),
             e2e_ttft=(0.0, 0.0),
         )
     return PhaseResult(test, c, stats)
+
+
+def test_columns():
+    assert COLUMNS == [
+        "model",
+        "test",
+        "t/s (req)",
+        "ttfr (ms)",
+        "est_ppt (ms)",
+        "e2e_ttft (ms)",
+    ]
 
 
 def test_build_rows_layout():
@@ -56,12 +61,15 @@ def test_build_rows_layout():
     pp_row, tg_row = rows
     assert pp_row[0] == "qwen3.8-27b-nvfp4"
     assert pp_row[1] == "pp200 (c1)"
-    assert pp_row[2] == "4448.64 ± 1603.51"
-    assert pp_row[6] == "144.27 ± 19.48"
-    assert pp_row[4] == ""  # no peak columns for pp
+    assert pp_row[2] == "892.88 ± 2.82"  # t/s (req)
+    assert pp_row[3] == "144.27 ± 19.48"  # ttfr
+    assert pp_row[4] == "40.72 ± 19.48"  # est_ppt
+    assert pp_row[5] == "144.27 ± 19.48"  # e2e_ttft
     assert tg_row[1] == "tg128 (c1)"
-    assert tg_row[4] == "71.00 ± 4.24"
-    assert tg_row[6] == ""  # no ttfr columns for tg
+    assert tg_row[2] == "66.83 ± 5.13"  # t/s (req)
+    assert tg_row[3] == ""  # no ttfr columns for tg
+    assert tg_row[4] == ""
+    assert tg_row[5] == ""
 
 
 def test_markdown_report_shape():
@@ -85,4 +93,4 @@ def test_rich_report_renders():
     rendered = console.export_text()
     assert "pp200 (c1)" in rendered
     assert "tg128 (c1)" in rendered
-    assert "4448.64 ± 1603.51" in rendered
+    assert "892.88 ± 2.82" in rendered

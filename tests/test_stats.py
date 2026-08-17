@@ -4,8 +4,6 @@ from chinchilla_llm_bench.stats import (
     fmt_mean_std,
     fmt_ms_mean_std,
     mean_std,
-    peak_rate,
-    window_rate,
 )
 
 
@@ -29,37 +27,6 @@ def test_fmt_mean_std():
 
 def test_fmt_ms_mean_std():
     assert fmt_ms_mean_std(0.14427, 0.01948) == "144.27 ± 19.48"
-
-
-def test_peak_rate_flat_stream():
-    # 10 tokens at 0.1s apart -> 10 tok/s
-    times = [i * 0.1 for i in range(10)]
-    assert abs(peak_rate(times, window=0.5) - 10.0) < 1e-6
-
-
-def test_peak_rate_burst_beats_flat():
-    times = [0.0, 0.05, 0.1, 10.0, 10.1]
-    # burst of 3 tokens in 0.1s -> 20 tok/s peak
-    assert abs(peak_rate(times, window=0.5) - 20.0) < 1e-6
-
-
-def test_peak_rate_too_few_samples():
-    assert peak_rate([]) == 0.0
-    assert peak_rate([0.1]) == 0.0
-
-
-def test_window_rate_counts_arrivals_in_range():
-    arrivals = [(t, 1) for t in (0.0, 0.1, 0.2, 5.0)]
-    assert abs(window_rate(arrivals, 0.0, 0.3) - 10.0) < 1e-9  # 3 tok / 0.3s
-    assert window_rate(arrivals, 1.0, 2.0) == 0.0
-    assert window_rate(arrivals, 0.5, 0.5) == 0.0
-
-
-def test_window_rate_weighted_entries():
-    # pp-style: a burst of 500 prompt tokens counted at the ttfr moment
-    arrivals = [(0.66, 500), (0.7, 1), (2.0, 500)]
-    assert abs(window_rate(arrivals, 0.0, 0.75) - 501 / 0.75) < 1e-9
-    assert abs(window_rate(arrivals, 0.66, 1.0) - 501 / 0.34) < 1e-6
 
 
 def test_peak_tracker_tracks_peak_and_rate():
