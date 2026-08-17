@@ -1,5 +1,7 @@
 from chinchilla_llm_bench.client import list_models, resolve_tokenizer, stream_chat
 
+from mock_server import MockVLLMServer
+
 
 def test_list_models(mock_server):
     assert list_models(mock_server.base_url) == ["mock-model"]
@@ -31,11 +33,32 @@ def test_stream_chat_on_token_callback(mock_server):
         "mock-model",
         "hello",
         4,
-        on_token=lambda text, t_rel: seen.append((text, t_rel)),
+        on_token=lambda text, t_rel, kind: seen.append((text, t_rel, kind)),
     )
     assert result.error is None
     assert len(seen) == 4
-    assert all(t >= 0 for _text, t in seen)
+    assert all(t >= 0 for _text, t, _kind in seen)
+    assert all(kind == "content" for _text, _t, kind in seen)
+
+
+def test_stream_chat_counts_reasoning_tokens():
+    server = MockVLLMServer(token_delay=0.001, reasoning_tokens=4).start()
+    try:
+        seen = []
+        result = stream_chat(
+            server.base_url,
+            "mock-model",
+            "hello",
+            8,
+            on_token=lambda text, t_rel, kind: seen.append((text, t_rel, kind)),
+        )
+    finally:
+        server.stop()
+    assert result.error is None
+    assert result.completion_tokens == 8  # thinking + content both counted
+    assert len(seen) == 8
+    assert [k for _t, _r, k in seen[:4]] == ["think"] * 4
+    assert [k for _t, _r, k in seen[4:]] == ["content"] * 4
 
 
 def test_stream_chat_http_error():

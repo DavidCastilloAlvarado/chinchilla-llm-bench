@@ -48,23 +48,61 @@ def estimate_tokens(text: str) -> int:
     return max(1, int(round(len(text.split()) * 1.3)))
 
 
+# Role-specific openers so every agent works on a task that matches its role.
+ROLE_OPENERS = {
+    "coder": "Review and refactor the following Python service so it is clean, typed, and free of race conditions.",
+    "researcher": "Summarize the current state of research on distributed inference and its open problems.",
+    "analyst": "Analyze the latency metrics of a streaming inference service and explain the outliers.",
+    "ops": "Write an operations runbook for scaling and draining a production inference node safely.",
+    "writer": "Write a vivid scene set on a remote island where a light warns ships of the rocks.",
+    "planner": "Draw up a phased delivery plan for a multi-node model deployment with clear milestones.",
+    "tester": "Design a test strategy covering edge cases, load spikes, and failure injection.",
+    "architect": "Design a system architecture for a fleet of inference workers behind a gateway.",
+    "reviewer": "Review the proposed design and list the concrete risks and mitigations for each.",
+    "data": "Explain how to model streaming token data and choose the right pipeline and storage.",
+    "support": "Draft a careful support response that resolves a flaky-connection ticket step by step.",
+    "devops": "Write the CI/CD pipeline configuration for shipping a model server with canary deploys.",
+}
+
+# Short role-specific instructions for the decode (tg) test.
+ROLE_TG_PROMPTS = {
+    "coder": "Write a Python function that parses a semver string and returns its parts.",
+    "researcher": "Explain in three short paragraphs why KV-cache memory dominates at high batch size.",
+    "analyst": "Interpret this p99 latency increase and state the two most likely causes.",
+    "ops": "List the exact steps to safely drain one node from a load-balanced inference pool.",
+    "writer": "Write a short, vivid story about a lighthouse keeper and a storm.",
+    "planner": "Outline a four-phase rollout plan for moving a model to a new GPU cluster.",
+    "tester": "Describe a load test that would expose a tokenizer deadlock.",
+    "architect": "Sketch the components of a multi-region inference service and their contracts.",
+    "reviewer": "Give a structured review of a cache invalidation design with three concrete fixes.",
+    "data": "Describe a schema for storing per-request token timings and one useful query.",
+    "support": "Write a clear, empathetic reply to a user reporting intermittent 502 errors.",
+    "devops": "Describe the canary deployment steps for a model server with automatic rollback.",
+}
+
+
 def build_prompt(
     target_tokens: int,
     count_tokens: TokenCounter | None = None,
     seed: int = 1337,
+    opener: str | None = None,
 ) -> str:
     """Build a prompt of approximately ``target_tokens`` tokens.
 
-    When ``count_tokens`` is provided (e.g. vLLM's ``/tokenize`` endpoint)
-    the result is trimmed so the real counter reports <= target_tokens.
-    Otherwise a word-count heuristic is used. Deterministic per seed.
+    ``opener`` (e.g. a role-specific task sentence) is placed first and the
+    rest is padded with filler sentences. When ``count_tokens`` is provided
+    (e.g. vLLM's ``/tokenize`` endpoint) the result is trimmed so the real
+    counter reports <= target_tokens. Otherwise a word-count heuristic is
+    used. Deterministic per seed.
     """
     if target_tokens <= 0:
         return ""
     count = count_tokens or estimate_tokens
     rng = random.Random(seed)
     parts: list[str] = []
-    text = ""
+    if opener:
+        parts.append(opener)
+    text = " ".join(parts)
     while count(text) < target_tokens:
         parts.append(_SENTENCES[rng.randrange(len(_SENTENCES))])
         text = " ".join(parts)

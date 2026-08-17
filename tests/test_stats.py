@@ -1,5 +1,6 @@
 from chinchilla_llm_bench.stats import (
     PeakTracker,
+    RateTracker,
     fmt_mean_std,
     fmt_ms_mean_std,
     mean_std,
@@ -67,3 +68,19 @@ def test_peak_tracker_tracks_peak_and_rate():
 def test_peak_tracker_empty():
     tracker = PeakTracker()
     assert tracker.rate(1.0) == 0.0
+
+
+def test_rate_tracker_counts_trailing_window():
+    tracker = RateTracker(window=1.0)
+    now = 0.0
+    for _ in range(5):
+        tracker.add(now)
+        now += 0.1
+    assert abs(tracker.rate(now) - 5.0) < 1e-9
+    # after a 2s gap the old events have aged out of the 1s window
+    assert tracker.rate(now + 2.0) == 0.0
+
+
+def test_rate_tracker_empty():
+    tracker = RateTracker()
+    assert tracker.rate(5.0) == 0.0

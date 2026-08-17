@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from .agent import Agent, ROLES
 from .client import list_models, resolve_tokenizer, stream_chat
 from .config import BenchConfig
-from .prompt import build_prompt
+from .prompt import ROLE_OPENERS, ROLE_TG_PROMPTS, build_prompt
 from .stats import (
     PhaseStats,
     RequestStats,
@@ -49,10 +49,9 @@ class BenchRunner:
         self.ui.agents = self.agents
         self.phases: list[PhaseResult] = []
         self.warnings: list[str] = []
-        self._pp_prompt = ""
-        self._pp_prompt_tokens = 0
-        self._tg_prompt = ""
-        self._tg_prompt_tokens = 0
+        self._count = None  # token counter (resolved in preflight)
+        self._pp_prompts: dict[int, tuple[str, int]] = {}
+        self._tg_prompts: dict[int, tuple[str, int]] = {}
         self._baseline_ttfr = 0.0
 
     # ------------------------------------------------------------------ run
@@ -87,16 +86,24 @@ class BenchRunner:
             self.warnings.append(
                 f"model {self.config.model!r} not listed in /models ({', '.join(models)})"
             )
-        count, source = resolve_tokenizer(self.config.base_url)
-        self._pp_prompt = build_prompt(self.config.pp, count, seed=self.config.seed)
-        self._pp_prompt_tokens = count(self._pp_prompt)
-        self._tg_prompt = self.config.tg_prompt
-        self._tg_prompt_tokens = count(self._tg_prompt)
+        self._count, source = resolve_tokenizer(self.config.base_url)
+        # One prompt per agent: role-specific opener, padded to pp tokens.
+        for agent in self.agents:
+            pp_prompt = build_prompt(
+                self.config.pp,
+                self._count,
+                seed=self.config.seed + agent.idx,
+                opener=ROLE_OPENERS.get(agent.role),
+            )
+            self._pp_prompts[agent.idx] = (pp_prompt, self._count(pp_prompt))
+            tg_prompt = ROLE_TG_PROMPTS.get(agent.role, self.config.tg_prompt)
+            self._tg_prompts[agent.idx] = (tg_prompt, self._count(tg_prompt))
+        sample_pp = self._pp_prompts[self.agents[0].idx][1]
         self.ui.set_phase(
-            f"ready · pp prompt {self._pp_prompt_tokens} tok · tokenizer: {source}", 0
+            f"ready · pp ~{sample_pp} tok · tokenizer: {source}", 0
         )
         self.ui.log(
-            f"== ready: pp prompt {self._pp_prompt_tokens} tok, tokenizer: {source} =="
+            f"== ready: pp ~{sample_pp} tok, tokenizer: {source} =="
         )
 
     # --------------------------------------------------------------- baseline
@@ -127,16 +134,11 @@ class BenchRunner:
     # ----------------------------------------------------------------- phases
     def _phase(self, test: str, c: int) -> None:
         cfg = self.config
-        prompt = self._pp_prompt if test == "pp" else self._tg_prompt
-        p_tokens = self._pp_prompt_tokens if test == "pp" else self._tg_prompt_tokens
         max_tokens = 1 if test == "pp" else cfg.tg
+        prompts = self._pp_prompts if test == "pp" else self._tg_prompts
         label = f"{cfg.label(test)} (c{c})"
         self.ui.set_phase(label, c)
         self.ui.log(f"== {label}: {cfg.n} requests, {c} agent(s) ==")
-
-        q: "queue.Queue[RequestSpec]" = queue.Queue()
-        for _ in range(cfg.n):
-            q.put(RequestSpec(test, c, prompt, p_tokens, max_tokens))
 
         arrivals: list[tuple[float, int]] = []  # (t since phase start, agent idx)
         arrivals_lock = threading.Lock()
@@ -147,8 +149,9 @@ class BenchRunner:
         def execute(agent: Agent, spec: RequestSpec):
             t_start = time.perf_counter() - t_phase0
 
-            def on_token(_text: str, t_rel: float):
+            def on_token(text: str, t_rel: float, kind: str = "content"):
                 self.ui.on_token()
+                agent.add_token(text, kind)
                 with arrivals_lock:
                     arrivals.append((t_rel, agent.idx))
 
@@ -162,6 +165,8 @@ class BenchRunner:
                 on_token=on_token,
             )
             t_end = time.perf_counter() - t_phase0
+            if result.error is None:
+                self.ui.on_request_done(result.duration)
             rs = RequestStats(
                 agent=agent.idx,
                 test=test,
@@ -187,10 +192,19 @@ class BenchRunner:
                     )
             return result
 
+        # Per-agent queues so every agent always sees its own role prompt.
         agents = self.agents[:c]
-        for agent in agents:
+        counts = [cfg.n // c + (1 if i < cfg.n % c else 0) for i in range(c)]
+        queues = []
+        for i, agent in enumerate(agents):
+            prompt, p_tokens = prompts[agent.idx]
+            q: "queue.Queue[RequestSpec]" = queue.Queue()
+            for _ in range(counts[i]):
+                q.put(RequestSpec(test, c, prompt, p_tokens, max_tokens))
+            queues.append(q)
             agent.start(q, execute)
-        q.join()
+        for q in queues:
+            q.join()
         phase_seconds = time.perf_counter() - t_phase0
         for agent in agents:
             agent.join()

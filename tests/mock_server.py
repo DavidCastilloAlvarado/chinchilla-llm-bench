@@ -36,15 +36,20 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if self.path.rstrip("/").endswith("/chat/completions"):
             max_tokens = int(body.get("max_tokens", 8))
+            reasoning = int(getattr(self.server, "reasoning_tokens", 0))
             delay = float(getattr(self.server, "token_delay", 0.002))
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
             for i in range(max_tokens):
+                if i < reasoning:
+                    delta = {"reasoning_content": f"thk{i} "}
+                else:
+                    delta = {"content": f"tok{i} "}
                 chunk = {
                     "id": "cmpl-1",
                     "object": "chat.completion.chunk",
-                    "choices": [{"index": 0, "delta": {"content": f"tok{i} "}}],
+                    "choices": [{"index": 0, "delta": delta}],
                 }
                 self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
                 self.wfile.flush()
@@ -66,9 +71,10 @@ class _Handler(BaseHTTPRequestHandler):
 class MockVLLMServer:
     """ThreadingHTTPServer speaking just enough of the vLLM/OpenAI API."""
 
-    def __init__(self, token_delay: float = 0.001):
+    def __init__(self, token_delay: float = 0.001, reasoning_tokens: int = 0):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self.server.token_delay = token_delay
+        self.server.reasoning_tokens = reasoning_tokens
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     @property

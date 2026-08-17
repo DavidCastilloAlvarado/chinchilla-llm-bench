@@ -52,6 +52,30 @@ def window_rate(arrivals: Sequence[tuple[float, int]], t0: float, t1: float) -> 
     return tokens / (t1 - t0)
 
 
+class RateTracker:
+    """Trailing-window count rate over timestamps (thread-safe)."""
+
+    def __init__(self, window: float = 1.0):
+        self.window = window
+        self._lock = threading.Lock()
+        self._times: deque[float] = deque()
+
+    def add(self, t: float) -> None:
+        with self._lock:
+            self._times.append(t)
+            while self._times and self._times[0] < t - self.window:
+                self._times.popleft()
+
+    def rate(self, t: float) -> float:
+        """Events per second over the trailing window."""
+        with self._lock:
+            while self._times and self._times[0] < t - self.window:
+                self._times.popleft()
+            if not self._times:
+                return 0.0
+            return len(self._times) / self.window
+
+
 class PeakTracker:
     """Sliding-window peak over a shared token stream (thread-safe).
 

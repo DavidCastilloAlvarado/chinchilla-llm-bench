@@ -41,11 +41,18 @@ While running, the terminal shows a swarm grid — one card per agent:
 - **border color** = status: green working · cyan done · red error · dim idle
 - **title** = agent id + role (`A3  tester`)
 - **subtitle** = status + tokens generated so far
-- **body** = the prompt (dim) and the live streaming output
+- **body** = the agent's own prompt (grey), its thinking tokens (dim italic,
+  Qwen3-style `reasoning_content`), and the live streaming output (white)
 - **top bar** = current phase, active concurrency level, `AGENTS LIVE`,
-  `TOKENS/SEC`, `TOKENS TOTAL`, `ELAPSED`
+  `TOKENS/SEC`, `REQ/S (TOTAL)`, `REQ/S (REQ)`, `TOKENS GEN` (total tokens
+  generated), `REQ DONE`, `ELAPSED`
 
 Keys while running: `q` or `s` = stop (reports what finished), `l` = toggle loop.
+
+Every agent works on a task that matches its role: the prefill prompt starts
+with a role-specific instruction (coder refactors code, researcher summarizes
+papers, …) and is padded to exactly `pp` tokens; the decode prompt is a short
+role-specific instruction.
 
 ## Setup (uv)
 
@@ -119,5 +126,9 @@ enough of the vLLM/OpenAI API (SSE streaming, usage chunks, `/models`,
 
 - Any OpenAI-compatible endpoint works, but `est_ppt` and exact prompt sizing
   are best with vLLM (it serves `/tokenize`).
+- Thinking models (Qwen3, …) stream `reasoning_content` before the answer;
+  those tokens are counted in the throughput metrics and shown in the cards.
+  If you want pure answer tokens only, start vLLM with thinking disabled
+  (`--reasoning-parser` off / `chat_template_kwargs {"enable_thinking": false}`).
 - `--n` should be ≥ the highest `--c` so every agent stays busy.
 - Results depend on server load; run the sweep twice to check stability.

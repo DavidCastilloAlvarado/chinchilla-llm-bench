@@ -10,7 +10,7 @@ import httpx
 
 from .prompt import estimate_tokens
 
-TokenCallback = Callable[[str, float], None]
+TokenCallback = Callable[[str, float, str], None]
 
 
 @dataclass
@@ -36,8 +36,9 @@ def stream_chat(
 ) -> ChatResult:
     """POST ``{base_url}/chat/completions`` with ``stream=True`` and consume the SSE feed.
 
-    ``on_token(text, t_rel)`` is invoked for every content chunk, where
-    ``t_rel`` is seconds since the request started.
+    ``on_token(text, t_rel, kind)`` is invoked for every content chunk, where
+    ``t_rel`` is seconds since the request started and ``kind`` is
+    ``"content"`` or ``"think"`` (reasoning tokens from thinking models).
     """
     url = base_url.rstrip("/") + "/chat/completions"
     payload = {
@@ -76,6 +77,10 @@ def stream_chat(
                     if choices:
                         delta = choices[0].get("delta") or {}
                         piece = delta.get("content")
+                        kind = "content"
+                        if not piece:
+                            piece = delta.get("reasoning_content")
+                            kind = "think"
                         if piece:
                             now = time.perf_counter() - t0
                             if result.ttfr is None:
@@ -83,7 +88,7 @@ def stream_chat(
                             result.token_times.append(now)
                             pieces.append(piece)
                             if on_token:
-                                on_token(piece, now)
+                                on_token(piece, now, kind)
                     usage = obj.get("usage")
                     if isinstance(usage, dict):
                         result.prompt_tokens = int(
@@ -92,6 +97,9 @@ def stream_chat(
                         result.completion_tokens = int(
                             usage.get("completion_tokens") or result.completion_tokens
                         )
+                        # Final usage chunk (vLLM include_usage): no more content.
+                        if not choices:
+                            break
     except httpx.HTTPError as exc:
         result.error = f"{type(exc).__name__}: {exc}"
     result.duration = time.perf_counter() - t0

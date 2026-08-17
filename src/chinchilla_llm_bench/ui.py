@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
+from collections import deque
 from typing import Callable, Optional
 
 from rich import box
@@ -21,7 +22,7 @@ from rich.text import Text
 
 from .agent import Agent, AgentSnapshot, STATUS_STYLES
 from .config import BenchConfig
-from .stats import PeakTracker
+from .stats import PeakTracker, RateTracker
 
 _CARD_INNER_W = 22
 _CARD_HEIGHT = 7  # border lines + 5 inner lines
@@ -113,8 +114,12 @@ class SwarmUI:
         self.phase = "connecting"
         self.active_c = 0
         self.total_tokens = 0
+        self.requests_done = 0
         self._total_lock = threading.Lock()
         self.tracker = PeakTracker(window=1.0)
+        self.req_tracker = RateTracker(window=1.0)
+        self._durations: "deque[float]" = deque(maxlen=64)
+        self._dur_lock = threading.Lock()
         self._start = time.time()
         self._live: Optional[Live] = None
         self._watcher: Optional[InputWatcher] = None
@@ -164,6 +169,22 @@ class SwarmUI:
             self.total_tokens += 1
         self.tracker.add(time.time())
 
+    def on_request_done(self, duration: float) -> None:
+        """Record a completed (ok) request for req/s stats."""
+        with self._total_lock:
+            self.requests_done += 1
+        self.req_tracker.add(time.time())
+        with self._dur_lock:
+            self._durations.append(duration)
+
+    @property
+    def req_per_req(self) -> float:
+        """Per-request completion rate: 1 / mean recent request duration."""
+        with self._dur_lock:
+            if not self._durations:
+                return 0.0
+            return 1.0 / (sum(self._durations) / len(self._durations))
+
     def set_phase(self, label: str, c: int) -> None:
         self.phase = label
         self.active_c = c
@@ -202,11 +223,26 @@ class SwarmUI:
         now = time.time()
         elapsed = now - self._start
         tps = self.tracker.rate(now)
+        rps_total = self.req_tracker.rate(now)
+        rps_req = self.req_per_req
         live = sum(1 for a in self.agents if a.snapshot().status == "working")
+        if self.console.width < 150:
+            return Text.assemble(
+                (f"AGENTS {live}", "bold white"),
+                (f"  TOK/S {tps:,.0f}", "bold yellow"),
+                (f"  REQ/S {rps_total:.2f}", "bold green"),
+                (f"  REQ/S·REQ {rps_req:.2f}", "bold green"),
+                (f"  TOK GEN {self.total_tokens:,}", "bold cyan"),
+                (f"  REQ {self.requests_done}", "bold blue"),
+                (f"  {elapsed:.0f}s", "bold magenta"),
+            )
         return Text.assemble(
             (f"AGENTS LIVE {live}", "bold white"),
             (f"   TOKENS/SEC {tps:,.0f}", "bold yellow"),
-            (f"   TOKENS TOTAL {self.total_tokens:,}", "bold cyan"),
+            (f"   REQ/S (TOTAL) {rps_total:.2f}", "bold green"),
+            (f"   REQ/S (REQ) {rps_req:.2f}", "bold green"),
+            (f"   TOKENS GEN {self.total_tokens:,}", "bold cyan"),
+            (f"   REQ DONE {self.requests_done}", "bold blue"),
             (f"   ELAPSED {elapsed:.0f}s", "bold magenta"),
         )
 
@@ -244,14 +280,19 @@ class SwarmUI:
         inner = _CARD_HEIGHT - 2
         prompt_lines = _wrap(s.prompt, _CARD_INNER_W, 2)
         for line in prompt_lines:
-            t.append(line, style="dim")
+            t.append(line, style="grey62")
             t.append("\n")
         room = inner - len(prompt_lines)
-        if room > 0 and s.output:
-            out_lines = s.output.splitlines()[-room:]
-            for line in out_lines:
+        out_n = min(2, room) if s.output else 0
+        think_n = room - out_n
+        if think_n and s.think:
+            for line in s.think.splitlines()[-think_n:]:
+                t.append(line[:_CARD_INNER_W], style="italic grey42")
+                t.append("\n")
+        if out_n:
+            for line in s.output.splitlines()[-out_n:]:
                 t.append(line[:_CARD_INNER_W], style="white")
                 t.append("\n")
-        if not s.output and s.detail:
+        if not s.output and not s.think and s.detail:
             t.append(s.detail[:_CARD_INNER_W], style="cyan")
         return t

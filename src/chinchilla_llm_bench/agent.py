@@ -29,8 +29,6 @@ STATUS_STYLES = {
     "error": "red",
 }
 
-_MAX_OUTPUT = 4000
-
 
 @dataclass
 class AgentSnapshot:
@@ -41,6 +39,7 @@ class AgentSnapshot:
     status: str
     prompt: str
     output: str
+    think: str
     tokens: int
     prompt_tokens: int
     detail: str
@@ -60,6 +59,7 @@ class Agent:
         self._status = "idle"
         self._prompt = ""
         self._output = ""
+        self._think = ""
         self._tokens = 0
         self._prompt_tokens = 0
         self._detail = ""
@@ -74,6 +74,7 @@ class Agent:
                 self._status,
                 self._prompt,
                 self._output,
+                self._think,
                 self._tokens,
                 self._prompt_tokens,
                 self._detail,
@@ -89,17 +90,23 @@ class Agent:
             prompt=prompt,
             prompt_tokens=prompt_tokens,
             output="",
+            think="",
             tokens=0,
             detail="",
             status="working",
         )
 
-    def add_token(self, text: str) -> None:
+    def add_token(self, text: str, kind: str = "content") -> None:
         with self._lock:
-            self._output += text
             self._tokens += 1
-            if len(self._output) > _MAX_OUTPUT:
-                self._output = self._output[-3000:]
+            if kind == "think":
+                self._think += text
+                if len(self._think) > 2000:
+                    self._think = self._think[-1500:]
+            else:
+                self._output += text
+                if len(self._output) > 4000:
+                    self._output = self._output[-3000:]
 
     def finish(self, ok: bool, detail: str) -> None:
         self._set(status="done" if ok else "error", detail=detail)

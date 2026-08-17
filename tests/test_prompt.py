@@ -39,3 +39,18 @@ def test_build_prompt_deterministic_per_seed():
 def test_build_prompt_fallback_estimate():
     prompt = build_prompt(40)
     assert estimate_tokens(prompt) <= 52  # within ~30% of target
+
+
+def test_build_prompt_with_opener():
+    from chinchilla_llm_bench.prompt import ROLE_OPENERS
+
+    def count(text: str) -> int:
+        return len(text.split())
+
+    opener = ROLE_OPENERS["coder"]
+    prompt = build_prompt(50, count_tokens=count, seed=3, opener=opener)
+    assert prompt.startswith(opener)
+    assert count(prompt) <= 50
+    # different roles produce different prompts
+    other = build_prompt(50, count_tokens=count, seed=3, opener=ROLE_OPENERS["writer"])
+    assert prompt != other
