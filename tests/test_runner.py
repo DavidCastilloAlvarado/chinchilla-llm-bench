@@ -80,3 +80,23 @@ def test_unreachable_server_raises(mock_server):
     except SystemExit:
         raised = True
     assert raised
+
+
+def test_phase_runs_at_least_c_requests(mock_server):
+    """With n < c, every agent must still get a request (no idle agents)."""
+    config = BenchConfig(
+        base_url=mock_server.base_url,
+        model="mock-model",
+        pp=10,
+        tg=8,
+        concurrency=[3],
+        n=1,  # fewer requests than agents
+        timeout=30.0,
+    )
+    ui = SwarmUI(config, quiet=True)
+    runner = BenchRunner(config, ui)
+    phases = runner.run()
+    tg = next(p for p in phases if p.test == "tg")
+    # n bumped from 1 to 3 so all three agents work
+    assert tg.stats.n_ok == 3
+    assert {r.agent for r in tg.requests if r.ok} == {1, 2, 3}

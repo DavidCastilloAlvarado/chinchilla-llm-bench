@@ -124,6 +124,7 @@ class SwarmUI:
         self.quiet = quiet
         self.phase = "connecting"
         self.active_c = 0
+        self.note = ""  # transient status line under the top bar (UI mode)
         self.total_tokens = 0
         self.requests_done = 0
         self._total_lock = threading.Lock()
@@ -200,6 +201,11 @@ class SwarmUI:
     def set_phase(self, label: str, c: int) -> None:
         self.phase = label
         self.active_c = c
+        self.note = ""
+
+    def set_note(self, text: str) -> None:
+        """Transient status line rendered under the top bar in UI mode."""
+        self.note = text
 
     def log(self, line: str) -> None:
         """Plain progress line, only used in --no-ui mode."""
@@ -208,7 +214,11 @@ class SwarmUI:
 
     # -- rendering ------------------------------------------------------------------
     def _frame(self) -> Group:
-        return Group(self._topbar(), self._grid())
+        parts = [self._topbar()]
+        if self.note:
+            parts.append(Text(self.note, style="yellow"))
+        parts.append(self._grid())
+        return Group(*parts)
 
     def _topbar(self) -> Table:
         t = Table.grid(padding=(0, 0))

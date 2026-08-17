@@ -147,5 +147,6 @@ enough of the vLLM/OpenAI API (SSE streaming, usage chunks, `/models`,
 - Reasoning is disabled by default; a thinking model with a 1-token budget
   would otherwise spend it on reasoning and the prefill test would measure
   nothing.
-- `--n` should be ≥ the highest `--c` so every agent stays busy.
+- Every phase runs at least `c` requests (if `--n < c`, it is bumped to `c`
+  automatically) so all agents stay busy; raise `--n` for more averaging.
 - Results depend on server load; run the sweep twice to check stability.
