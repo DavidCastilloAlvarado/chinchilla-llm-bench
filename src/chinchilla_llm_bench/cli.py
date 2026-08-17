@@ -42,7 +42,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="concurrency levels to sweep, e.g. --c 1 2 3 4",
     )
-    parser.add_argument("--n", type=int, default=5, help="requests per test (default 5)")
+    parser.add_argument(
+        "--n",
+        type=int,
+        default=5,
+        help="repetitions per test: each agent runs n times, total = n x c (default 5)",
+    )
     parser.add_argument(
         "--warmup",
         type=int,

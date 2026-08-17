@@ -82,21 +82,42 @@ def test_unreachable_server_raises(mock_server):
     assert raised
 
 
-def test_phase_runs_at_least_c_requests(mock_server):
-    """With n < c, every agent must still get a request (no idle agents)."""
+def test_each_agent_runs_n_repetitions(mock_server):
+    """--n means repetitions (llama-benchy style): with n=1, c=3 every agent
+    runs exactly once, so all three agents work in a single wave."""
     config = BenchConfig(
         base_url=mock_server.base_url,
         model="mock-model",
         pp=10,
         tg=8,
         concurrency=[3],
-        n=1,  # fewer requests than agents
+        n=1,  # one repetition
         timeout=30.0,
     )
     ui = SwarmUI(config, quiet=True)
     runner = BenchRunner(config, ui)
     phases = runner.run()
     tg = next(p for p in phases if p.test == "tg")
-    # n bumped from 1 to 3 so all three agents work
-    assert tg.stats.n_ok == 3
+    assert tg.stats.n_ok == 3  # 1 rep x 3 agents
     assert {r.agent for r in tg.requests if r.ok} == {1, 2, 3}
+
+
+def test_n_reps_times_c_total(mock_server):
+    """n=2, c=2 -> 4 requests total (2 full waves of 2 agents)."""
+    config = BenchConfig(
+        base_url=mock_server.base_url,
+        model="mock-model",
+        pp=10,
+        tg=8,
+        concurrency=[2],
+        n=2,
+        timeout=30.0,
+    )
+    ui = SwarmUI(config, quiet=True)
+    runner = BenchRunner(config, ui)
+    phases = runner.run()
+    tg = next(p for p in phases if p.test == "tg")
+    assert tg.stats.n_ok == 4
+    from collections import Counter
+
+    assert Counter(r.agent for r in tg.requests if r.ok) == {1: 2, 2: 2}

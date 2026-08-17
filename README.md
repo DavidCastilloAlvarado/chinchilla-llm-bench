@@ -14,8 +14,9 @@ chinchilla-bench --base-url http://127.0.0.1:1235/v1 \
 
 ## What it measures
 
-For every concurrency level `c` in `--c`, two tests are run (each with `--n`
-requests, at most `c` in flight at once):
+For every concurrency level `c` in `--c`, two tests are run: each test is a
+block of `c` concurrent agents, repeated `--n` times (llama-benchy
+semantics: `--n` = repetitions, total requests = `n × c`):
 
 | test | what it does |
 |------|--------------|
@@ -90,7 +91,7 @@ uv run chinchilla-bench \
 | `--pp` | `200` | prompt tokens for the prefill test |
 | `--tg` | `128` | tokens to generate for the decode test |
 | `--c` | — | concurrency levels to sweep, e.g. `--c 1 2 3 4` (required) |
-| `--n` | `5` | requests per test |
+| `--n` | `5` | repetitions per test: each agent runs `n` times (total = `n × c` requests) |
 | `--warmup` | `2` | throwaway requests before measuring, to wake a cold server |
 | `--temperature` | `0.0` | sampling temperature |
 | `--timeout` | `300` | per-request timeout (s) |
@@ -147,6 +148,6 @@ enough of the vLLM/OpenAI API (SSE streaming, usage chunks, `/models`,
 - Reasoning is disabled by default; a thinking model with a 1-token budget
   would otherwise spend it on reasoning and the prefill test would measure
   nothing.
-- Every phase runs at least `c` requests (if `--n < c`, it is bumped to `c`
-  automatically) so all agents stay busy; raise `--n` for more averaging.
+- `--n` is a repetition count, not a total: `--c 4 --n 3` runs 3 full waves
+  of 4 concurrent agents (12 requests), exactly like llama-benchy.
 - Results depend on server load; run the sweep twice to check stability.

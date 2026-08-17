@@ -18,7 +18,7 @@ class BenchConfig:
     pp: int = 200
     tg: int = 128
     concurrency: list[int] = field(default_factory=lambda: [1])
-    n: int = 5  # requests per test
+    n: int = 5  # repetitions per test: each agent runs n times (total = n x c)
     temperature: float = 0.0
     timeout: float = 300.0
     seed: int = 1337
@@ -57,7 +57,7 @@ class BenchConfig:
             f"  pp       : {self.pp} tokens (prefill test, max_tokens=1)",
             f"  tg       : {self.tg} tokens (decode test)",
             f"  c        : {' '.join(map(str, self.concurrency))}",
-            f"  n        : {self.n} requests per test",
+            f"  n        : {self.n} repetitions per test (each agent runs n times)",
             f"  warmup   : {self.warmup} throwaway request(s)",
             f"  temp     : {self.temperature}",
             f"  thinking : {'on' if self.thinking else 'off (content only)'}",

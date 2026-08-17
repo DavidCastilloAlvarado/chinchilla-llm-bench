@@ -169,7 +169,9 @@ class BenchRunner:
         prompts = self._pp_prompts if test == "pp" else self._tg_prompts
         label = f"{cfg.label(test)} (c{c})"
         self.ui.set_phase(label, c)
-        self.ui.log(f"== {label}: {max(cfg.n, c)} requests, {c} agent(s) ==")
+        self.ui.log(
+            f"== {label}: {c} agent(s) x {cfg.n} reps = {c * cfg.n} requests =="
+        )
 
         # (t since phase start, agent idx, n_tokens) — weighted so the pp
         # test can count its prompt tokens as "processed" at ttfr time.
@@ -231,24 +233,15 @@ class BenchRunner:
             return result
 
         # Per-agent queues so every agent always sees its own role prompt.
-        # Concurrency c needs at least c requests; bump n so every agent
-        # gets work (otherwise the trailing agents sit idle forever).
-        n_eff = max(cfg.n, c)
+        # --n is the number of *repetitions* (llama-benchy style): each agent
+        # runs n times, so the phase issues n*c requests in n full waves of
+        # c concurrent agents.
         agents = self.agents[:c]
-        counts = [n_eff // c + (1 if i < n_eff % c else 0) for i in range(c)]
-        if n_eff != cfg.n:
-            self.ui.log(
-                f"   note: running {n_eff} requests (not {cfg.n}) so all "
-                f"{c} agents stay busy; raise --n for more averaging"
-            )
-            self.ui.set_note(
-                f"note: running {n_eff} requests (not {cfg.n}) so all {c} agents stay busy — raise --n for more averaging"
-            )
         queues = []
         for i, agent in enumerate(agents):
             prompt, p_tokens = prompts[agent.idx]
             q: "queue.Queue[RequestSpec]" = queue.Queue()
-            for _ in range(counts[i]):
+            for _ in range(cfg.n):
                 q.put(RequestSpec(test, c, prompt, p_tokens, max_tokens))
             queues.append(q)
             agent.start(q, execute)
