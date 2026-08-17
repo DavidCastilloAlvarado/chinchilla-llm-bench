@@ -74,6 +74,8 @@ While running, the terminal shows a swarm grid — one card per agent:
 
 Keys while running: `q` or `s` = stop (reports what finished), `l` = toggle loop.
 
+![The agent-swarm UI mid-run: tg1024 (c4), four agents streaming output, five idle](docs/swarm.png)
+
 Every agent works on a task that matches its role: the prefill prompt starts
 with a role-specific instruction (coder refactors code, researcher summarizes
 papers, …) and is padded to exactly `pp` tokens; the decode prompt is a short
@@ -144,6 +146,7 @@ src/chinchilla_llm_bench/
 ├── runner.py   # sweep orchestration: preflight, warmup, latency probe, pp/tg phases
 ├── stats.py    # mean±std, live rate trackers, phase aggregation
 └── report.py   # rich table (console) + markdown table (file)
+docs/           # screenshots (docs/swarm.png)
 tests/          # pytest suite with a mock vLLM server
 ```
 
