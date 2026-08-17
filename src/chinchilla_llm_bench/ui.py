@@ -11,7 +11,6 @@ import math
 import sys
 import threading
 import time
-from collections import deque
 from typing import Callable, Optional
 
 from rich import box
@@ -129,8 +128,6 @@ class SwarmUI:
         self._total_lock = threading.Lock()
         self.tracker = PeakTracker(window=1.0)
         self.req_tracker = RateTracker(window=1.0)
-        self._req_rates: "deque[float]" = deque(maxlen=64)
-        self._dur_lock = threading.Lock()
         self._start = time.time()
         self._live: Optional[Live] = None
         self._watcher: Optional[InputWatcher] = None
@@ -181,21 +178,10 @@ class SwarmUI:
         self.tracker.add(time.time(), n_tokens)
 
     def on_request_done(self, duration: float, tokens: int) -> None:
-        """Record a completed (ok) request for req/s and per-request tok/s stats."""
+        """Record a completed (ok) request for the REQ/S counter."""
         with self._total_lock:
             self.requests_done += 1
         self.req_tracker.add(time.time())
-        with self._dur_lock:
-            if duration > 1e-9:
-                self._req_rates.append(tokens / duration)
-
-    @property
-    def tokens_per_sec_req(self) -> float:
-        """Per-request tokens/sec: mean over recent completed requests."""
-        with self._dur_lock:
-            if not self._req_rates:
-                return 0.0
-            return sum(self._req_rates) / len(self._req_rates)
 
     def set_phase(self, label: str, c: int) -> None:
         self.phase = label
@@ -235,9 +221,10 @@ class SwarmUI:
         now = time.time()
         elapsed = now - self._start
         tps_total = self.tracker.rate(now)
-        tps_req = self.tokens_per_sec_req
-        rps = self.req_tracker.rate(now)
         live = sum(1 for a in self.agents if a.snapshot().status == "working")
+        # per-request rate = aggregate rate spread over the active runners
+        tps_req = tps_total / live if live > 0 else 0.0
+        rps = self.req_tracker.rate(now)
         if self.console.width < 160:
             return Text.assemble(
                 (f"AGENTS {live}", "bold white"),
