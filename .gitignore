@@ -1,0 +1,21 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# uv
+uv.lock.bak
+
+# Benchmark output
+model_result_*.txt
+
+# Test/coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
