@@ -27,6 +27,30 @@ def fmt_ms_mean_std(mean_s: float, std_s: float) -> str:
     return f"{mean_s * 1000:.2f} ± {std_s * 1000:.2f}"
 
 
+def peak_rate(times: Sequence[float], window: float = 1.0) -> float:
+    """Peak tokens/sec over a sliding ``window`` (llama-benchy algorithm).
+
+    ``times`` is a per-token timestamp series (already token-weighted, so
+    each entry is one token). If the whole series spans less than one
+    window, use the actual span so short bursts don't read under their mean.
+    """
+    if not times:
+        return 0.0
+    ts = sorted(times)
+    total_duration = ts[-1] - ts[0]
+    if total_duration < window and total_duration > 0:
+        return len(ts) / total_duration
+    max_tokens = 0
+    start_idx = 0
+    for end_idx, end_time in enumerate(ts):
+        while start_idx < end_idx and ts[start_idx] <= end_time - window:
+            start_idx += 1
+        current = end_idx - start_idx + 1  # includes the current token
+        if current > max_tokens:
+            max_tokens = current
+    return float(max_tokens) / window
+
+
 class RateTracker:
     """Trailing-window count rate over timestamps (thread-safe)."""
 
@@ -101,10 +125,13 @@ class RequestStats:
     agent: int
     test: str  # "pp" | "tg"
     concurrency: int
+    rep: int  # repetition (wave) index, 0-based
     prompt_tokens: int
     completion_tokens: int
-    ttfr: float | None
+    ttfr: float | None  # start -> first response chunk
+    ttft: float | None  # start -> first generated token
     duration: float
+    token_times: list[float] = field(default_factory=list)  # per-token offsets
     start_offset: float = 0.0  # seconds since phase start
     end_offset: float = 0.0  # seconds since phase start
     error: str | None = None
@@ -112,6 +139,20 @@ class RequestStats:
     @property
     def ok(self) -> bool:
         return self.error is None
+
+    @property
+    def last_token(self) -> float | None:
+        """Phase-relative time of the last generated token (offsets)."""
+        if self.token_times:
+            return self.start_offset + self.token_times[-1]
+        return None
+
+    @property
+    def first_token_offset(self) -> float | None:
+        """Phase-relative time of the first generated token (offsets)."""
+        if self.token_times:
+            return self.start_offset + self.token_times[0]
+        return None
 
 
 @dataclass
@@ -124,7 +165,10 @@ class PhaseStats:
     n_failed: int
     total_tokens: int
     phase_seconds: float
+    total_tps: tuple[float, float]  # (mean, std) per-wave aggregate t/s
     req_tps: tuple[float, float]  # (mean, std) per-request t/s
+    peak_total: tuple[float, float]  # peak t/s over merged per-wave tokens
+    peak_req: tuple[float, float]  # mean per-request peak t/s
     ttfr: tuple[float, float]  # seconds
     est_ppt: tuple[float, float]  # seconds
     e2e_ttft: tuple[float, float]  # seconds

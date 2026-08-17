@@ -26,6 +26,7 @@ class BenchConfig:
     tg_prompt: str = "Write a short, vivid story about a lighthouse keeper."
     warmup: int = 2  # throwaway requests to wake a cold server before measuring
     thinking: bool = False  # Qwen3-style reasoning: off by default (pure content)
+    exact_tg: bool = True  # force the full tg budget (min_tokens + ignore_eos)
     api_key: str = "dummy"  # any non-empty string for vLLM; real key for gated APIs
 
     def __post_init__(self) -> None:
@@ -61,6 +62,7 @@ class BenchConfig:
             f"  warmup   : {self.warmup} throwaway request(s)",
             f"  temp     : {self.temperature}",
             f"  thinking : {'on' if self.thinking else 'off (content only)'}",
+            f"  exact_tg : {'on' if self.exact_tg else 'off (may stop at EOS)'}",
             f"  timeout  : {self.timeout}s",
         ]
         return "\n".join(lines)

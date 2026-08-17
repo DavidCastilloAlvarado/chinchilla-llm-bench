@@ -175,10 +175,10 @@ class SwarmUI:
             self.loop = not self.loop
 
     # -- feed (called by agents/runner) -------------------------------------------
-    def on_token(self) -> None:
+    def on_token(self, n_tokens: int = 1) -> None:
         with self._total_lock:
-            self.total_tokens += 1
-        self.tracker.add(time.time())
+            self.total_tokens += n_tokens
+        self.tracker.add(time.time(), n_tokens)
 
     def on_request_done(self, duration: float, tokens: int) -> None:
         """Record a completed (ok) request for req/s and per-request tok/s stats."""

@@ -119,3 +119,85 @@ def test_n_reps_times_c_total(mock_server):
     from collections import Counter
 
     assert Counter(r.agent for r in tg.requests if r.ok) == {1: 2, 2: 2}
+
+
+def test_waves_grouped_by_repetition(mock_server):
+    """n=2, c=2 -> two waves (rep 0, rep 1) of 2 requests each."""
+    config = BenchConfig(
+        base_url=mock_server.base_url,
+        model="mock-model",
+        pp=10,
+        tg=8,
+        concurrency=[2],
+        n=2,
+        timeout=30.0,
+    )
+    ui = SwarmUI(config, quiet=True)
+    runner = BenchRunner(config, ui)
+    phases = runner.run()
+    tg = next(p for p in phases if p.test == "tg")
+    from collections import Counter
+
+    assert Counter(r.rep for r in tg.requests if r.ok) == {0: 2, 1: 2}
+
+
+def test_batch_metrics_c1_total_equals_req(mock_server):
+    """c=1: the wave aggregate is the single request itself (llama-benchy)."""
+    config = BenchConfig(
+        base_url=mock_server.base_url,
+        model="mock-model",
+        pp=10,
+        tg=8,
+        concurrency=[1],
+        n=2,
+        timeout=30.0,
+    )
+    ui = SwarmUI(config, quiet=True)
+    runner = BenchRunner(config, ui)
+    phases = runner.run()
+    tg = next(p for p in phases if p.test == "tg")
+    assert tg.stats.total_tps == tg.stats.req_tps
+    assert tg.stats.req_tps[0] > 0
+    # short 8-token stream (< 1 s): peak uses the actual span -> ~ mean rate
+    assert tg.stats.peak_total[0] > 0
+    assert tg.stats.peak_req[0] > 0
+
+
+def test_batch_metrics_c2_total_higher_than_req(mock_server):
+    """c=2: the wave (total) throughput is the batch aggregate and should
+    exceed the per-request rate (two decoders overlap in one wave)."""
+    config = BenchConfig(
+        base_url=mock_server.base_url,
+        model="mock-model",
+        pp=10,
+        tg=8,
+        concurrency=[2],
+        n=2,
+        timeout=30.0,
+    )
+    ui = SwarmUI(config, quiet=True)
+    runner = BenchRunner(config, ui)
+    phases = runner.run()
+    tg = next(p for p in phases if p.test == "tg")
+    assert tg.stats.total_tps[0] > tg.stats.req_tps[0]
+
+
+def test_pp_est_ppt_subtracts_latency(mock_server):
+    """est_ppt = max(0, ttfr - measured network latency) < raw ttfr."""
+    config = BenchConfig(
+        base_url=mock_server.base_url,
+        model="mock-model",
+        pp=10,
+        tg=8,
+        concurrency=[1],
+        n=2,
+        timeout=30.0,
+    )
+    ui = SwarmUI(config, quiet=True)
+    runner = BenchRunner(config, ui)
+    phases = runner.run()
+    pp = next(p for p in phases if p.test == "pp")
+    assert runner._latency > 0  # latency probe ran
+    assert 0 <= pp.stats.est_ppt[0] < pp.stats.ttfr[0]
+    assert pp.stats.e2e_ttft[0] > 0
+    assert pp.stats.req_tps[0] > 0

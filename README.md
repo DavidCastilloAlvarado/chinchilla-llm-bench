@@ -16,21 +16,42 @@ chinchilla-bench --base-url http://127.0.0.1:1235/v1 \
 
 For every concurrency level `c` in `--c`, two tests are run: each test is a
 block of `c` concurrent agents, repeated `--n` times (llama-benchy
-semantics: `--n` = repetitions, total requests = `n × c`):
+semantics: `--n` = repetitions, total requests = `n × c`). One repetition of
+the c concurrent agents is a **wave** (batch), the unit of the aggregate
+metrics.
 
 | test | what it does |
 |------|--------------|
 | `pp<pp>` (prefill) | prompt of `pp` tokens, `max_tokens=1` → measures prompt-processing speed and time-to-first-token |
-| `tg<tg>` (decode)  | role prompt that *demands an answer of at least `tg` words* (~1.3 tok/word, so the ask exceeds the budget) → generation is cut at exactly `tg` tokens instead of stopping early at EOS |
+| `tg<tg>` (decode)  | role prompt, `max_tokens=tg`, and — by default — vLLM's `min_tokens=tg` + `ignore_eos` (llama-benchy's `exact_tg`) so generation runs to exactly `tg` tokens instead of stopping early at EOS (the prompt also asks for ≥ tg words as a fallback for servers without that support) |
+
+### The signals (llama-benchy-style)
+
+All token counts are **real tokens, never chunk events** — one SSE chunk can
+carry several tokens:
+
+1. The request sets vLLM's `return_token_ids` extension, so each streamed
+   chunk carries the exact token IDs of the tokens it delivers. A chunk with
+   N tokens contributes N timestamps, spread evenly across the gap since the
+   previous token → an exact per-token timestamp series per request.
+2. If the server doesn't support `return_token_ids`, the server's own
+   `usage.completion_tokens` count is used and timestamps are interpolated
+   over the chunk times (last resort: 1 token per chunk).
+3. After the warm-up, network latency is measured as the mean RTT of 3
+   `GET /models` probes (llama-benchy's `api` latency mode). `est_ppt` is
+   `ttfr − latency`, i.e. the time the server actually spent on the prompt.
 
 ### Report columns
 
 | column | meaning |
 |--------|---------|
-| `t/s (req)` | per-request throughput, computed from the server's own token counts (usage chunk) — pp: prompt tokens / ttfr, tg: generated tokens / duration. Mean ± std over requests. This is the only t/s column: it is robust to how the server batches SSE chunks (one chunk can carry several tokens, which makes chunk-based "total"/"peak" rates unreliable) |
-| `ttfr (ms)` | time to first token, mean ± std (pp only) |
-| `est_ppt (ms)` | estimated pure prompt-processing time = `ttfr − baseline`, where baseline is the *minimum* ttfr of three 1-token prompts measured after a warm-up (pp only) |
-| `e2e_ttft (ms)` | end-to-end time to first token as seen by the client (pp only) |
+| `t/s (total)` | aggregate tokens/second **per wave**: pp = Σ prompt tokens / (last first-token − first start), tg = Σ decode tokens / (last token − first token) over the wave's c requests. For `c=1` this equals `t/s (req)` |
+| `t/s (req)` | per-request tokens/second: pp = prompt tokens / est_ppt, tg = (N−1) / (last token − first token). Mean ± std over requests |
+| `peak t/s` | max tokens in a **1 s sliding window** over the wave's merged per-token timestamps (tg only; pp is a single token per request, so there is nothing to peak) |
+| `peak t/s (req)` | same, per request, mean ± std over requests (tg only) |
+| `ttfr (ms)` | time to first response chunk, mean ± std (pp only) |
+| `est_ppt (ms)` | estimated pure prompt-processing time = `ttfr − latency` (pp only) |
+| `e2e_ttft (ms)` | end-to-end time to the first *generated token* as seen by the client (pp only) |
 
 Prompt length is made exact using vLLM's native `POST /tokenize` endpoint when
 available (falls back to a ~1.3 tok/word estimate if the endpoint is missing).
@@ -47,9 +68,9 @@ While running, the terminal shows a swarm grid — one card per agent:
   ignored, so every token is rendered as continuous text and no line is ever
   cut off mid-sentence; the newest wrapped lines are always visible.
 - **top bar** = current phase, active concurrency level, `AGENTS LIVE`,
-  `TOKENS/SEC (TOTAL)` (aggregate stream rate), `TOKENS/SEC (REQ)` (per-request
-  generation rate), `REQ/S (TOTAL)` (request completions/s), `TOKENS GEN`
-  (total tokens generated), `REQ DONE`, `ELAPSED`
+  `TOKENS/SEC (TOTAL)` (aggregate stream rate, real tokens), `TOKENS/SEC (REQ)`
+  (per-request generation rate), `REQ/S (TOTAL)` (request completions/s),
+  `TOKENS GEN` (total tokens generated), `REQ DONE`, `ELAPSED`
 
 Keys while running: `q` or `s` = stop (reports what finished), `l` = toggle loop.
 
@@ -94,6 +115,7 @@ uv run chinchilla-bench \
 | `--timeout` | `300` | per-request timeout (s) |
 | `--seed` | `1337` | prompt-generation seed |
 | `--thinking` | off | enable reasoning (Qwen3) thinking mode; off by default so content is generated directly |
+| `--no-exact-tg` | off | let the model stop at EOS instead of forcing the full tg budget (`min_tokens` + `ignore_eos`; on by default) |
 | `--api-key` | `dummy` | API key (vLLM accepts any non-empty string) |
 | `--loop` | off | repeat the whole sweep until stopped |
 | `--output` | `model_result_<model>.txt` | where to write the markdown report |
@@ -103,10 +125,10 @@ The run ends with the settings summary and the results table printed to the
 terminal, plus a markdown copy written to `model_result_<model>.txt`:
 
 ```
-| model             |       test |        t/s (req) |      ttfr (ms) |    est_ppt (ms) |   e2e_ttft (ms) |
-|:------------------|-----------:|-----------------:|---------------:|----------------:|----------------:|
-| qwen3.8-27b-nvfp4 | pp200 (c1) | 4448.64 ± 1603.51 | 144.27 ± 19.48 |  40.72 ± 19.48 | 144.27 ± 19.48 |
-| qwen3.8-27b-nvfp4 | tg128 (c1) |     66.83 ± 5.13 |                |                |                |
+| model             |      test |   t/s (total) |    t/s (req) |  peak t/s | peak t/s (req) |      ttfr (ms) |    est_ppt (ms) |   e2e_ttft (ms) |
+|:------------------|----------:|--------------:|-------------:|----------:|---------------:|---------------:|----------------:|----------------:|
+| qwen3.8-27b-nvfp4 | pp200 (c1) | 4448.64 ± 1603.51 | 4448.64 ± 1603.51 |  |  | 144.27 ± 19.48 |  40.72 ± 19.48 | 144.27 ± 19.48 |
+| qwen3.8-27b-nvfp4 | tg128 (c1) |     66.83 ± 5.13 |     66.83 ± 5.13 |  72.0 ± 4.1 |      68.0 ± 5.0 |                |                |                |
 ```
 
 ## Project layout
@@ -115,11 +137,11 @@ terminal, plus a markdown copy written to `model_result_<model>.txt`:
 src/chinchilla_llm_bench/
 ├── cli.py      # argparse CLI + entry point
 ├── config.py   # BenchConfig (all settings)
-├── client.py   # streaming client on the official openai SDK + /tokenize probe
+├── client.py   # streaming client on the official openai SDK + /tokenize + latency probe
 ├── prompt.py   # builds prompts of ~pp tokens (exact via vLLM tokenizer)
 ├── agent.py    # one worker thread = one swarm card
 ├── ui.py       # rich Live swarm grid + top bar + key handling
-├── runner.py   # sweep orchestration: preflight, baseline, pp/tg phases
+├── runner.py   # sweep orchestration: preflight, warmup, latency probe, pp/tg phases
 ├── stats.py    # mean±std, live rate trackers, phase aggregation
 └── report.py   # rich table (console) + markdown table (file)
 tests/          # pytest suite with a mock vLLM server
@@ -132,19 +154,25 @@ uv run pytest
 ```
 
 The suite runs a real HTTP server (`tests/mock_server.py`) that speaks just
-enough of the vLLM/OpenAI API (SSE streaming, usage chunks, `/models`,
-`/tokenize`) to exercise the client, the full sweep, and the report end to end.
+enough of the vLLM/OpenAI API (SSE streaming with per-chunk `token_ids`,
+usage chunks, `/models`, `/tokenize`) to exercise the client, the full sweep,
+and the report end to end.
 
 ## Notes
 
 - Any OpenAI-compatible endpoint works (the client is the official `openai`
-  SDK); `est_ppt` and exact prompt sizing are best with vLLM (it serves
-  `/tokenize`).
-- A warm-up runs before the baseline so a cold server (first-request wake-up,
-  CUDA graph builds) doesn't inflate `ttfr`/`est_ppt`.
+  SDK); `est_ppt`, exact prompt sizing and per-chunk token counts are best
+  with vLLM (it serves `/tokenize` and `return_token_ids`). On servers without
+  `return_token_ids` the client falls back to the server's usage counts.
+- A warm-up runs before measuring so a cold server (first-request wake-up,
+  CUDA graph builds) doesn't inflate `ttfr`/`est_ppt`; network latency is
+  then probed (3× `GET /models`) and subtracted from `ttfr` for `est_ppt`.
 - Reasoning is disabled by default; a thinking model with a 1-token budget
   would otherwise spend it on reasoning and the prefill test would measure
   nothing.
 - `--n` is a repetition count, not a total: `--c 4 --n 3` runs 3 full waves
   of 4 concurrent agents (12 requests), exactly like llama-benchy.
+- `exact_tg` is on by default: vLLM `min_tokens=tg` + `ignore_eos` forces the
+  full budget. Disable with `--no-exact-tg` (the prompt then asks for ≥ tg
+  words so EOS rarely hits before the budget).
 - Results depend on server load; run the sweep twice to check stability.

@@ -4,6 +4,7 @@ from chinchilla_llm_bench.stats import (
     fmt_mean_std,
     fmt_ms_mean_std,
     mean_std,
+    peak_rate,
 )
 
 
@@ -58,3 +59,27 @@ def test_rate_tracker_counts_trailing_window():
 def test_rate_tracker_empty():
     tracker = RateTracker()
     assert tracker.rate(5.0) == 0.0
+
+
+def test_peak_rate_sliding_window():
+    # 100 tokens spread over 10s = mean 10/s, but a burst of 50 in 0.5s
+    # inside the 1s window -> peak 50
+    times = [i * 0.01 for i in range(50)] + [2.0 + i * 0.1 for i in range(50)]
+    assert abs(peak_rate(times) - 50.0) < 1e-9
+
+
+def test_peak_rate_uniform_stream():
+    # 20 tokens at 10/s over 1.9s: any 1s window holds at most 10 tokens
+    times = [i * 0.1 for i in range(20)]
+    assert abs(peak_rate(times) - 10.0) < 1e-9
+
+
+def test_peak_rate_short_burst_uses_actual_span():
+    # whole stream shorter than the window -> tokens / actual span
+    times = [0.0, 0.05, 0.10, 0.15]
+    assert abs(peak_rate(times) - 4.0 / 0.15) < 1e-9
+
+
+def test_peak_rate_empty_and_single():
+    assert peak_rate([]) == 0.0
+    assert abs(peak_rate([0.5]) - 1.0) < 1e-9  # 1 token / 1s window

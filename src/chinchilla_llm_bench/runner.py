@@ -1,4 +1,4 @@
-"""Orchestrates the benchmark: preflight, baseline, phases, agents, stats."""
+"""Orchestrates the benchmark: preflight, warmup, latency probe, phases."""
 from __future__ import annotations
 
 import queue
@@ -6,13 +6,14 @@ import threading
 import time
 from dataclasses import dataclass, field
 from .agent import Agent, ROLES
-from .client import list_models, resolve_tokenizer, stream_chat
+from .client import list_models, measure_latency, resolve_tokenizer, stream_chat
 from .config import BenchConfig
 from .prompt import ROLE_OPENERS, build_prompt, build_tg_prompt
 from .stats import (
     PhaseStats,
     RequestStats,
     mean_std,
+    peak_rate,
 )
 from .ui import SwarmUI
 
@@ -21,6 +22,7 @@ from .ui import SwarmUI
 class RequestSpec:
     test: str
     concurrency: int
+    rep: int  # repetition (wave) index, 0-based
     prompt: str
     prompt_tokens: int
     max_tokens: int
@@ -48,7 +50,7 @@ class BenchRunner:
         self._count = None  # token counter (resolved in preflight)
         self._pp_prompts: dict[int, tuple[str, int]] = {}
         self._tg_prompts: dict[int, tuple[str, int]] = {}
-        self._baseline_ttfr = 0.0
+        self._latency = 0.0  # measured network RTT (seconds)
 
     # ------------------------------------------------------------------ run
     def run(self) -> list[PhaseResult]:
@@ -56,8 +58,8 @@ class BenchRunner:
         try:
             self._preflight()
             self._warmup()
+            self._latency_probe()
             while True:
-                self._baseline()
                 for c in self.config.concurrency:
                     if self.ui.stopped:
                         break
@@ -131,32 +133,18 @@ class BenchRunner:
                 api_key=cfg.api_key,
             )
 
-    def _baseline(self) -> None:
-        """Measure fixed overhead: ttfr of a 1-token prompt (max_tokens=1).
-
-        est_ppt = ttfr - baseline, i.e. the time actually spent processing
-        the pp prompt rather than network/scheduling overhead. The minimum
-        of the samples is used so one slow request can't skew it.
+    # --------------------------------------------------------------- latency
+    def _latency_probe(self) -> None:
+        """Measure network RTT: mean of 3 ``GET /models`` (llama-benchy's
+        'api' latency mode). est_ppt = ttfr - latency removes the round-trip
+        from the prompt-processing time.
         """
-        self.ui.set_phase("calibrating (1 tok baseline)", 0)
-        self.ui.log("== calibrating baseline (1-token prompt) ==")
-        times: list[float] = []
-        for _ in range(3):
-            result = stream_chat(
-                self.config.base_url,
-                self.config.model,
-                "Hi",
-                1,
-                temperature=self.config.temperature,
-                timeout=self.config.timeout,
-                thinking=self.config.thinking,
-                api_key=self.config.api_key,
-            )
-            if result.error is None and result.ttfr is not None:
-                times.append(result.ttfr)
-        self._baseline_ttfr = min(times) if times else 0.0
-        if not times:
-            self.warnings.append("baseline calibration failed; est_ppt will be raw ttfr")
+        self.ui.set_phase("measuring latency", 0)
+        self.ui.log("== measuring network latency (3x GET /models) ==")
+        self._latency = measure_latency(
+            self.config.base_url, api_key=self.config.api_key
+        )
+        self.ui.log(f"== latency: {self._latency * 1000:.2f} ms ==")
 
     # ----------------------------------------------------------------- phases
     def _phase(self, test: str, c: int) -> None:
@@ -176,9 +164,14 @@ class BenchRunner:
         def execute(agent: Agent, spec: RequestSpec):
             t_start = time.perf_counter() - t_phase0
 
-            def on_token(text: str, t_rel: float, kind: str = "content"):
-                self.ui.on_token()
-                agent.add_token(text, kind)
+            def on_token(
+                text: str, t_rel: float, kind: str = "content", n_tokens: int = 1
+            ):
+                self.ui.on_token(n_tokens)
+                agent.add_token(text, kind, n_tokens)
+
+            # llama-benchy's exact_tg: force the full budget server-side.
+            min_tokens = cfg.tg if (test == "tg" and cfg.exact_tg) else None
 
             result = stream_chat(
                 cfg.base_url,
@@ -190,6 +183,7 @@ class BenchRunner:
                 on_token=on_token,
                 thinking=cfg.thinking,
                 api_key=cfg.api_key,
+                min_tokens=min_tokens,
             )
             t_end = time.perf_counter() - t_phase0
             if result.error is None:
@@ -198,10 +192,13 @@ class BenchRunner:
                 agent=agent.idx,
                 test=test,
                 concurrency=c,
+                rep=spec.rep,
                 prompt_tokens=result.prompt_tokens or spec.prompt_tokens,
                 completion_tokens=result.completion_tokens,
                 ttfr=result.ttfr,
+                ttft=result.ttft,
                 duration=result.duration,
+                token_times=result.token_times,
                 start_offset=t_start,
                 end_offset=t_end,
                 error=result.error,
@@ -227,8 +224,8 @@ class BenchRunner:
         for i, agent in enumerate(agents):
             prompt, p_tokens = prompts[agent.idx]
             q: "queue.Queue[RequestSpec]" = queue.Queue()
-            for _ in range(cfg.n):
-                q.put(RequestSpec(test, c, prompt, p_tokens, max_tokens))
+            for rep in range(cfg.n):
+                q.put(RequestSpec(test, c, rep, prompt, p_tokens, max_tokens))
             queues.append(q)
             agent.start(q, execute)
         for q in queues:
@@ -252,23 +249,81 @@ class BenchRunner:
         phase_reqs: list[RequestStats],
         phase_seconds: float,
     ) -> PhaseStats:
+        """Aggregate per-request + per-wave stats (llama-benchy semantics).
+
+        * per request: pp = prompt / est_ppt, tg = (N-1) / (last - first token)
+        * per wave (one repetition of c concurrent requests):
+          pp = sum(prompt) / (max first token - min start),
+          tg = sum(N-1) / (max last token - min first token),
+          peak = max tokens in a 1 s sliding window over merged token times
+        """
         ok = [r for r in phase_reqs if r.ok]
         n_failed = len(phase_reqs) - len(ok)
+        latency = self._latency
 
-        # Per-request rate from the server's own token counts (usage chunk):
-        # pp = prompt tokens / ttfr, tg = generated tokens / duration. This is
-        # the only t/s figure that is robust to how the server batches SSE
-        # chunks (one chunk can carry several tokens).
-        if test == "pp":
-            req_rates = [r.prompt_tokens / r.ttfr for r in ok if r.ttfr]
-            ttfr_vals = [r.ttfr for r in ok if r.ttfr is not None]
-            est_vals = [max(0.0, v - self._baseline_ttfr) for v in ttfr_vals]
-            e2e_vals = ttfr_vals
+        # -- per-request metrics -------------------------------------------
+        req_rates: list[float] = []
+        ttfr_vals: list[float] = []
+        est_vals: list[float] = []
+        e2e_vals: list[float] = []
+        for r in ok:
+            if test == "pp":
+                if r.ttfr is not None:
+                    ttfr_vals.append(r.ttfr)
+                    est = max(0.0, r.ttfr - latency)
+                    est_vals.append(est)
+                    if est > 0:
+                        req_rates.append(r.prompt_tokens / est)
+                if r.ttft is not None:
+                    e2e_vals.append(r.ttft)
+            else:
+                n = len(r.token_times)
+                if n > 1 and r.token_times[-1] > r.token_times[0]:
+                    req_rates.append((n - 1) / (r.token_times[-1] - r.token_times[0]))
+
+        # -- per-wave (batch) metrics: wave = the c requests of one rep ----
+        waves: dict[int, list[RequestStats]] = {}
+        for r in ok:
+            waves.setdefault(r.rep, []).append(r)
+
+        wave_totals: list[float] = []
+        peak_total_vals: list[float] = []
+        for rep in sorted(waves):
+            batch = waves[rep]
+            firsts = [
+                r.first_token_offset for r in batch if r.first_token_offset is not None
+            ]
+            if not firsts:
+                continue
+            if test == "pp":
+                span = max(firsts) - min(r.start_offset for r in batch)
+                if span > 0:
+                    wave_totals.append(sum(r.prompt_tokens for r in batch) / span)
+            else:
+                lasts = [r.last_token for r in batch if r.last_token is not None]
+                if not lasts:
+                    continue
+                span = max(lasts) - min(firsts)
+                if span > 0:
+                    decode_tokens = sum(
+                        len(r.token_times) - 1 for r in batch if r.token_times
+                    )
+                    if decode_tokens > 0:
+                        wave_totals.append(decode_tokens / span)
+            merged = [r.start_offset + t for r in batch for t in r.token_times]
+            if merged:
+                peak_total_vals.append(peak_rate(merged))
+        peak_req_vals = [
+            peak_rate(r.token_times) for r in ok if len(r.token_times) > 1
+        ]
+
+        if c > 1:
+            total_tps = mean_std(wave_totals)
+            req_tps = mean_std(req_rates)
         else:
-            req_rates = [r.completion_tokens / r.duration for r in ok if r.duration > 0]
-            ttfr_vals = []
-            est_vals = []
-            e2e_vals = []
+            # single request: the aggregate is the request itself
+            req_tps = mean_std(req_rates)
+            total_tps = req_tps
 
         total_tokens = (
             sum(r.prompt_tokens for r in ok)
@@ -283,7 +338,10 @@ class BenchRunner:
             n_failed=n_failed,
             total_tokens=total_tokens,
             phase_seconds=phase_seconds,
-            req_tps=mean_std(req_rates),
+            total_tps=total_tps,
+            req_tps=req_tps,
+            peak_total=mean_std(peak_total_vals),
+            peak_req=mean_std(peak_req_vals),
             ttfr=mean_std(ttfr_vals),
             est_ppt=mean_std(est_vals),
             e2e_ttft=mean_std(e2e_vals),

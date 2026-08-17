@@ -64,6 +64,14 @@ def build_parser() -> argparse.ArgumentParser:
         "is generated directly (vLLM chat_template_kwargs enable_thinking=false)",
     )
     parser.add_argument(
+        "--no-exact-tg",
+        dest="exact_tg",
+        action="store_false",
+        default=True,
+        help="let the model stop at EOS instead of forcing the full tg budget "
+        "(default: exact_tg on — vLLM min_tokens + ignore_eos)",
+    )
+    parser.add_argument(
         "--api-key",
         default="dummy",
         help="API key (vLLM accepts any non-empty string; default 'dummy')",
@@ -106,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
             seed=args.seed,
             loop=args.loop,
             thinking=args.thinking,
+            exact_tg=args.exact_tg,
             api_key=args.api_key,
         )
     except ValueError as exc:

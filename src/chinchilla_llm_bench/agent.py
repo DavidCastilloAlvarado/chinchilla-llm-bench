@@ -96,9 +96,9 @@ class Agent:
             status="working",
         )
 
-    def add_token(self, text: str, kind: str = "content") -> None:
+    def add_token(self, text: str, kind: str = "content", n_tokens: int = 1) -> None:
         with self._lock:
-            self._tokens += 1
+            self._tokens += n_tokens
             if kind == "think":
                 self._think += text
                 if len(self._think) > 4000:

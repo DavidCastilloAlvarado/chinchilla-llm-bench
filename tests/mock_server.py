@@ -46,12 +46,16 @@ class _Handler(BaseHTTPRequestHandler):
                     delta = {"reasoning_content": f"thk{i} "}
                 else:
                     delta = {"content": f"tok{i} "}
+                choice = {"index": 0, "delta": delta}
+                if getattr(self.server, "token_ids", True):
+                    # vLLM's return_token_ids extension: real token IDs per chunk
+                    choice["token_ids"] = [100 + i]
                 chunk = {
                     "id": "cmpl-1",
                     "object": "chat.completion.chunk",
                     "created": 1,
                     "model": "mock-model",
-                    "choices": [{"index": 0, "delta": delta}],
+                    "choices": [choice],
                 }
                 self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
                 self.wfile.flush()
@@ -75,10 +79,12 @@ class _Handler(BaseHTTPRequestHandler):
 class MockVLLMServer:
     """ThreadingHTTPServer speaking just enough of the vLLM/OpenAI API."""
 
-    def __init__(self, token_delay: float = 0.001, reasoning_tokens: int = 0):
+    def __init__(self, token_delay: float = 0.001, reasoning_tokens: int = 0,
+                 token_ids: bool = True):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self.server.token_delay = token_delay
         self.server.reasoning_tokens = reasoning_tokens
+        self.server.token_ids = token_ids
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     @property
