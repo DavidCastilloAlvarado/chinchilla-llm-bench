@@ -8,14 +8,14 @@ def test_parser_full_example():
     parser = build_parser()
     args = parser.parse_args(
         [
-            "--base-url", "http://127.0.0.1:1235/v1",
+            "--base-url", "http://127.0.0.1:8000/v1",
             "--model", "qwen3.8-27b-nvfp4",
             "--pp", "200",
             "--tg", "128",
             "--c", "1", "2", "3", "4",
         ]
     )
-    assert args.base_url == "http://127.0.0.1:1235/v1"
+    assert args.base_url == "http://127.0.0.1:8000/v1"
     assert args.model == "qwen3.8-27b-nvfp4"
     assert args.pp == 200
     assert args.tg == 128

@@ -8,7 +8,7 @@ Connections use the official **`openai` Python SDK** — any OpenAI-compatible
 endpoint (vLLM, SGLang, TGI, …) works.
 
 ```
-chinchilla-bench --base-url http://127.0.0.1:1235/v1 \
+chinchilla-bench --base-url http://127.0.0.1:8000/v1 \
                  --model qwen3.8-27b-nvfp4 --pp 200 --tg 128 --c 1 2 3 4
 ```
 
@@ -96,7 +96,7 @@ uv run chinchilla-bench --help
 
 ```bash
 uv run chinchilla-bench \
-  --base-url http://127.0.0.1:1235/v1 \
+  --base-url http://127.0.0.1:8000/v1 \
   --model qwen3.8-27b-nvfp4 \
   --pp 200 --tg 128 \
   --c 1 2 3 4
