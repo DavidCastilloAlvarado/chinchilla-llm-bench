@@ -18,7 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="chinchilla-bench",
         description="Concurrency benchmark for a vLLM server with a live agent-swarm UI.",
         epilog=(
-            "example: chinchilla-bench --base-url http://127.0.0.1:8000/v1 ",
+            "example: chinchilla-bench --base-url http://127.0.0.1:8000/v1 "
             "--model qwen3.8-27b-nvfp4 --pp 200 --tg 128 --c 1 2 3 4"
         ),
     )
