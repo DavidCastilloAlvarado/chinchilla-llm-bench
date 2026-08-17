@@ -7,6 +7,8 @@ doing (prompt, streaming output, token count) while the run is in progress.
 Connections use the official **`openai` Python SDK** — any OpenAI-compatible
 endpoint (vLLM, SGLang, TGI, …) works.
 
+![Agent-swarm UI: every concurrent request gets its own card](docs/hero.png)
+
 ```
 chinchilla-bench --base-url http://127.0.0.1:8000/v1 \
                  --model qwen3.8-27b-nvfp4 --pp 200 --tg 128 --c 1 2 3 4
