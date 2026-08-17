@@ -54,3 +54,20 @@ def test_build_prompt_with_opener():
     # different roles produce different prompts
     other = build_prompt(50, count_tokens=count, seed=3, opener=ROLE_OPENERS["writer"])
     assert prompt != other
+
+
+def test_build_tg_prompt_demands_full_length():
+    from chinchilla_llm_bench.prompt import build_tg_prompt
+
+    prompt = build_tg_prompt("coder", 1024, "fallback task")
+    assert "at least 1024 words" in prompt
+    assert "do not stop" in prompt
+    assert prompt.startswith("Write a Python function")
+
+
+def test_build_tg_prompt_uses_fallback_for_unknown_role():
+    from chinchilla_llm_bench.prompt import build_tg_prompt
+
+    prompt = build_tg_prompt("wizard", 128, "Tell me a story.")
+    assert prompt.startswith("Tell me a story.")
+    assert "at least 128 words" in prompt

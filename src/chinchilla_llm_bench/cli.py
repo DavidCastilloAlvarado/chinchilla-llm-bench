@@ -43,6 +43,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="concurrency levels to sweep, e.g. --c 1 2 3 4",
     )
     parser.add_argument("--n", type=int, default=5, help="requests per test (default 5)")
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=2,
+        help="throwaway requests before measuring, to wake a cold server (default 2)",
+    )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--timeout", type=float, default=300.0, help="per-request timeout (s)")
     parser.add_argument("--seed", type=int, default=1337, help="prompt generation seed")
@@ -89,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
             tg=args.tg,
             concurrency=list(args.c),
             n=args.n,
+            warmup=args.warmup,
             temperature=args.temperature,
             timeout=args.timeout,
             seed=args.seed,

@@ -44,11 +44,11 @@ def peak_rate(times: Sequence[float], window: float = 0.5) -> float:
     return best
 
 
-def window_rate(arrivals: Sequence[tuple[float, int]], t0: float, t1: float) -> float:
-    """Aggregate tokens/sec over ``[t0, t1]`` from a shared arrival stream."""
+def window_rate(arrivals: Sequence[tuple[float, float]], t0: float, t1: float) -> float:
+    """Aggregate tokens/sec over ``[t0, t1]`` from entries of ``(time, n_tokens)``."""
     if t1 - t0 <= 1e-9:
         return 0.0
-    tokens = sum(1 for (t, _agent) in arrivals if t0 <= t <= t1)
+    tokens = sum(n for (t, n) in arrivals if t0 <= t <= t1)
     return tokens / (t1 - t0)
 
 

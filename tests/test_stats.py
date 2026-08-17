@@ -55,6 +55,13 @@ def test_window_rate_counts_arrivals_in_range():
     assert window_rate(arrivals, 0.5, 0.5) == 0.0
 
 
+def test_window_rate_weighted_entries():
+    # pp-style: a burst of 500 prompt tokens counted at the ttfr moment
+    arrivals = [(0.66, 500), (0.7, 1), (2.0, 500)]
+    assert abs(window_rate(arrivals, 0.0, 0.75) - 501 / 0.75) < 1e-9
+    assert abs(window_rate(arrivals, 0.66, 1.0) - 501 / 0.34) < 1e-6
+
+
 def test_peak_tracker_tracks_peak_and_rate():
     tracker = PeakTracker(window=1.0)
     now = 0.0

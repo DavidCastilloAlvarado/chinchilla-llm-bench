@@ -81,6 +81,22 @@ ROLE_TG_PROMPTS = {
 }
 
 
+def build_tg_prompt(role: str, tg_tokens: int, fallback: str) -> str:
+    """Decode-test prompt: role instruction + explicit length demand.
+
+    Asking for ``tg_tokens`` *words* (~1.3 tokens/word) exceeds the
+    ``max_tokens=tg_tokens`` budget, so generation runs until it is cut at
+    exactly ``tg`` tokens instead of stopping early at EOS. This makes the
+    tg test actually generate the requested number of tokens.
+    """
+    base = ROLE_TG_PROMPTS.get(role, fallback)
+    words = max(20, int(tg_tokens))
+    return (
+        f"{base} Write your answer in at least {words} words; do not stop "
+        f"early, keep going until you reach that length."
+    )
+
+
 def build_prompt(
     target_tokens: int,
     count_tokens: TokenCounter | None = None,

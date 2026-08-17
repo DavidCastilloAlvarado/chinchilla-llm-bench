@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from .agent import Agent, ROLES
 from .client import list_models, resolve_tokenizer, stream_chat
 from .config import BenchConfig
-from .prompt import ROLE_OPENERS, ROLE_TG_PROMPTS, build_prompt
+from .prompt import ROLE_OPENERS, build_prompt, build_tg_prompt
 from .stats import (
     PhaseStats,
     RequestStats,
@@ -59,6 +59,7 @@ class BenchRunner:
         self.ui.start()
         try:
             self._preflight()
+            self._warmup()
             while True:
                 self._baseline()
                 for c in self.config.concurrency:
@@ -100,7 +101,7 @@ class BenchRunner:
                 opener=ROLE_OPENERS.get(agent.role),
             )
             self._pp_prompts[agent.idx] = (pp_prompt, self._count(pp_prompt))
-            tg_prompt = ROLE_TG_PROMPTS.get(agent.role, self.config.tg_prompt)
+            tg_prompt = build_tg_prompt(agent.role, self.config.tg, self.config.tg_prompt)
             self._tg_prompts[agent.idx] = (tg_prompt, self._count(tg_prompt))
         sample_pp = self._pp_prompts[self.agents[0].idx][1]
         self.ui.set_phase(
@@ -111,11 +112,35 @@ class BenchRunner:
         )
 
     # --------------------------------------------------------------- baseline
+    def _warmup(self) -> None:
+        """Throwaway requests to wake a cold server (CUDA graphs, autotune).
+
+        Without this the baseline (and the first c-level) measure wake-up
+        instead of steady-state latency.
+        """
+        cfg = self.config
+        if cfg.warmup <= 0:
+            return
+        self.ui.set_phase(f"warming up ({cfg.warmup} requests)", 0)
+        self.ui.log(f"== warming up server ({cfg.warmup} throwaway requests) ==")
+        for _ in range(cfg.warmup):
+            stream_chat(
+                cfg.base_url,
+                cfg.model,
+                "Warmup request, answer with a single word.",
+                1,
+                temperature=cfg.temperature,
+                timeout=cfg.timeout,
+                thinking=cfg.thinking,
+                api_key=cfg.api_key,
+            )
+
     def _baseline(self) -> None:
         """Measure fixed overhead: ttfr of a 1-token prompt (max_tokens=1).
 
         est_ppt = ttfr - baseline, i.e. the time actually spent processing
-        the pp prompt rather than network/scheduling overhead.
+        the pp prompt rather than network/scheduling overhead. The minimum
+        of the samples is used so one slow request can't skew it.
         """
         self.ui.set_phase("calibrating (1 tok baseline)", 0)
         self.ui.log("== calibrating baseline (1-token prompt) ==")
@@ -133,7 +158,7 @@ class BenchRunner:
             )
             if result.error is None and result.ttfr is not None:
                 times.append(result.ttfr)
-        self._baseline_ttfr = sum(times) / len(times) if times else 0.0
+        self._baseline_ttfr = min(times) if times else 0.0
         if not times:
             self.warnings.append("baseline calibration failed; est_ppt will be raw ttfr")
 
@@ -146,7 +171,9 @@ class BenchRunner:
         self.ui.set_phase(label, c)
         self.ui.log(f"== {label}: {cfg.n} requests, {c} agent(s) ==")
 
-        arrivals: list[tuple[float, int]] = []  # (t since phase start, agent idx)
+        # (t since phase start, agent idx, n_tokens) — weighted so the pp
+        # test can count its prompt tokens as "processed" at ttfr time.
+        arrivals: list[tuple[float, int, int]] = []
         arrivals_lock = threading.Lock()
         phase_reqs: list[RequestStats] = []
         phase_reqs_lock = threading.Lock()
@@ -158,10 +185,11 @@ class BenchRunner:
             def on_token(text: str, t_rel: float, kind: str = "content"):
                 self.ui.on_token()
                 agent.add_token(text, kind)
-                with arrivals_lock:
-                    # t_rel is request-relative; the rate windows below are
-                    # phase-relative, so convert before storing.
-                    arrivals.append((t_start + t_rel, agent.idx))
+                if test != "pp":
+                    with arrivals_lock:
+                        # t_rel is request-relative; the rate windows below are
+                        # phase-relative, so convert before storing.
+                        arrivals.append((t_start + t_rel, agent.idx, 1))
 
             result = stream_chat(
                 cfg.base_url,
@@ -232,16 +260,25 @@ class BenchRunner:
         test: str,
         c: int,
         phase_reqs: list[RequestStats],
-        arrivals: list[tuple[float, int]],
+        arrivals: list[tuple[float, int, int]],
         phase_seconds: float,
     ) -> PhaseStats:
         ok = [r for r in phase_reqs if r.ok]
         n_failed = len(phase_reqs) - len(ok)
 
+        # Aggregate stream as (time, n_tokens). For pp, the "tokens" the
+        # server processes are the *prompt* tokens, all of them done by the
+        # ttfr moment (the model only generates 1 token, which is noise).
+        stream: list[tuple[float, int]] = [(t, n) for (t, _a, n) in arrivals]
+        if test == "pp":
+            for r in ok:
+                if r.ttfr is not None:
+                    stream.append((r.start_offset + r.ttfr, r.prompt_tokens))
+
         # Per-request "total" rate: aggregate (all agents) tokens during the
         # request's active window. For c=1 this equals the per-request rate.
         total_rates = [
-            window_rate(arrivals, r.start_offset - _WINDOW_PAD, r.end_offset + _WINDOW_PAD)
+            window_rate(stream, r.start_offset - _WINDOW_PAD, r.end_offset + _WINDOW_PAD)
             for r in ok
         ]
         # Per-request own rate.
@@ -262,7 +299,7 @@ class BenchRunner:
             for r in ok:
                 t0 = r.start_offset - _WINDOW_PAD
                 t1 = r.end_offset + _WINDOW_PAD
-                window_times = [t for (t, _a) in arrivals if t0 <= t <= t1]
+                window_times = [t for (t, _n) in stream if t0 <= t <= t1]
                 peak_total_vals.append(peak_rate(window_times))
 
         total_tokens = (

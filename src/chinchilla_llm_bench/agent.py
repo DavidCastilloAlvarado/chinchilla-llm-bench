@@ -101,12 +101,12 @@ class Agent:
             self._tokens += 1
             if kind == "think":
                 self._think += text
-                if len(self._think) > 2000:
-                    self._think = self._think[-1500:]
+                if len(self._think) > 4000:
+                    self._think = self._think[-3000:]
             else:
                 self._output += text
-                if len(self._output) > 4000:
-                    self._output = self._output[-3000:]
+                if len(self._output) > 12000:
+                    self._output = self._output[-9000:]
 
     def finish(self, ok: bool, detail: str) -> None:
         self._set(status="done" if ok else "error", detail=detail)

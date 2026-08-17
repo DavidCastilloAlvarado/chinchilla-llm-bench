@@ -25,28 +25,38 @@ from .agent import Agent, AgentSnapshot, STATUS_STYLES
 from .config import BenchConfig
 from .stats import PeakTracker, RateTracker
 
-_CARD_INNER_W = 22
-_CARD_HEIGHT = 7  # border lines + 5 inner lines
 
+def _flow(text: str, width: int, max_lines: int) -> list[str]:
+    """Flow-wrap ``text`` into lines of <= width chars, ignoring line breaks.
 
-def _wrap(text: str, width: int, max_lines: int) -> list[str]:
-    """Word-wrap ``text`` into at most ``max_lines`` lines of <= width chars."""
+    Every generated token is shown: newlines/paragraph breaks are treated as
+    spaces and the text wraps continuously, so the returned lines are complete
+    (never truncated mid-sentence). Returns the last ``max_lines`` lines, i.e.
+    the most recent part of the stream.
+    """
+    if max_lines <= 0 or not text:
+        return []
+    words = text.split()  # splits on any whitespace incl. newlines
     lines: list[str] = []
     line = ""
-    for word in text.split():
+    for word in words:
+        # hard-wrap a single token longer than the card width
+        while len(word) > width:
+            if line:
+                lines.append(line)
+                line = ""
+            lines.append(word[:width])
+            word = word[width:]
         candidate = f"{line} {word}".strip()
         if len(candidate) <= width:
             line = candidate
-            continue
-        if line:
-            lines.append(line)
-            line = ""
-        if len(lines) >= max_lines:
-            break
-        line = word[:width]
-    if line and len(lines) < max_lines:
+        else:
+            if line:
+                lines.append(line)
+            line = word
+    if line:
         lines.append(line)
-    return lines[:max_lines]
+    return lines[-max_lines:]
 
 
 class InputWatcher:
@@ -251,14 +261,16 @@ class SwarmUI:
     def _grid(self) -> Table:
         """Lay out the agent cards to fill the whole terminal.
 
-        Card width is fixed; the number of columns fits the terminal width
-        and the card height grows to fill the remaining vertical space, so
-        each card shows as much of the streamed text as possible.
+        Cards are sized wide (enough to read a sentence per line) and tall
+        (enough to show a good chunk of the streamed text); the grid fills
+        the terminal with as many wide columns as fit.
         """
         width = self.console.width
         height = self.console.height
-        card_w = 28  # inner 22 + 2 border + 2 padding
         gap = 2
+        # Each card is 2 border + 2 padding around the text.
+        inner_w = 34  # comfortable reading width
+        card_w = inner_w + 4
         cols = max(1, min(8, (width - gap) // (card_w + gap)))
         n = max(1, len(self.agents))
         rows = max(1, math.ceil(n / cols))
@@ -266,7 +278,7 @@ class SwarmUI:
         grid = Table.grid(padding=(0, 1))
         for _ in range(cols):
             grid.add_column(width=card_w, overflow="crop")
-        cards = [self._card(a, card_h) for a in self.agents]
+        cards = [self._card(a, card_h, inner_w) for a in self.agents]
         for i in range(0, len(cards), cols):
             row = cards[i : i + cols]
             while len(row) < cols:
@@ -274,13 +286,13 @@ class SwarmUI:
             grid.add_row(*row)
         return grid
 
-    def _card(self, agent: Agent, card_h: int) -> Panel:
+    def _card(self, agent: Agent, card_h: int, inner_w: int) -> Panel:
         s = agent.snapshot()
         style = STATUS_STYLES.get(s.status, "dim")
         title = f"A{s.idx}  {s.role}"
         subtitle = f"{s.status} · {s.tokens} tok"
         return Panel(
-            self._body(s, card_h),
+            self._body(s, card_h, inner_w),
             title=title,
             subtitle=subtitle,
             border_style=style,
@@ -288,15 +300,16 @@ class SwarmUI:
             height=card_h,
         )
 
-    def _body(self, s: AgentSnapshot, card_h: int) -> Text:
+    def _body(self, s: AgentSnapshot, card_h: int, inner_w: int) -> Text:
         """Prompt (top), then the streamed text filling the card, tail-first.
 
-        The most recent tokens are always visible; the buffer keeps the full
-        generated text so the card scrolls as the model streams.
+        The generated text is flow-wrapped (line breaks ignored) so every
+        token is rendered as continuous, readable text — the most recent
+        wrapped lines are shown and the card scrolls as the model streams.
         """
         t = Text()
         inner = max(3, card_h - 2)
-        prompt_lines = _wrap(s.prompt, _CARD_INNER_W, 2)
+        prompt_lines = _flow(s.prompt, inner_w, 2)
         for line in prompt_lines:
             t.append(line, style="grey62")
             t.append("\n")
@@ -306,16 +319,18 @@ class SwarmUI:
         if s.output:
             out_n = room if not s.think else max(1, room - 1)
             if s.think and out_n < room:
-                last_think = s.think.splitlines()[-1]
-                t.append(last_think[:_CARD_INNER_W] or "…", style="italic grey42")
+                last_think = _flow(s.think, inner_w, 1)
+                t.append(last_think[-1] if last_think else "…", style="italic grey42")
                 t.append("\n")
-            for line in s.output.splitlines()[-out_n:]:
-                t.append(line[:_CARD_INNER_W], style="white")
+            for line in _flow(s.output, inner_w, out_n):
+                t.append(line, style="white")
                 t.append("\n")
         elif s.think:
-            for line in s.think.splitlines()[-room:]:
-                t.append(line[:_CARD_INNER_W], style="italic grey42")
+            for line in _flow(s.think, inner_w, room):
+                t.append(line, style="italic grey42")
                 t.append("\n")
         elif s.detail:
-            t.append(s.detail[:_CARD_INNER_W], style="cyan")
+            for line in _flow(s.detail, inner_w, room):
+                t.append(line, style="cyan")
+                t.append("\n")
         return t
