@@ -24,6 +24,8 @@ class BenchConfig:
     seed: int = 1337
     loop: bool = False  # repeat the whole sweep until stopped (toggle with 'l')
     tg_prompt: str = "Write a short, vivid story about a lighthouse keeper."
+    thinking: bool = False  # Qwen3-style reasoning: off by default (pure content)
+    api_key: str = "dummy"  # any non-empty string for vLLM; real key for gated APIs
 
     def __post_init__(self) -> None:
         if self.pp <= 0:
@@ -56,6 +58,7 @@ class BenchConfig:
             f"  c        : {' '.join(map(str, self.concurrency))}",
             f"  n        : {self.n} requests per test",
             f"  temp     : {self.temperature}",
+            f"  thinking : {'on' if self.thinking else 'off (content only)'}",
             f"  timeout  : {self.timeout}s",
         ]
         return "\n".join(lines)

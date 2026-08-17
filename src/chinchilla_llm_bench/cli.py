@@ -47,6 +47,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=float, default=300.0, help="per-request timeout (s)")
     parser.add_argument("--seed", type=int, default=1337, help="prompt generation seed")
     parser.add_argument(
+        "--thinking",
+        action="store_true",
+        help="enable reasoning models (Qwen3) thinking; off by default so content "
+        "is generated directly (vLLM chat_template_kwargs enable_thinking=false)",
+    )
+    parser.add_argument(
+        "--api-key",
+        default="dummy",
+        help="API key (vLLM accepts any non-empty string; default 'dummy')",
+    )
+    parser.add_argument(
         "--loop",
         action="store_true",
         help="repeat the whole sweep until stopped (toggle with 'l' while running)",
@@ -82,6 +93,8 @@ def main(argv: list[str] | None = None) -> int:
             timeout=args.timeout,
             seed=args.seed,
             loop=args.loop,
+            thinking=args.thinking,
+            api_key=args.api_key,
         )
     except ValueError as exc:
         console.print(f"[bold red]invalid settings:[/] {exc}")

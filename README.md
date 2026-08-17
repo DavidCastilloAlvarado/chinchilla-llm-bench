@@ -4,6 +4,9 @@ Concurrency benchmark for a remote **vLLM** server, with a live **agent-swarm**
 terminal UI: every concurrent request gets its own card showing what it is
 doing (prompt, streaming output, token count) while the run is in progress.
 
+Connections use the official **`openai` Python SDK** — any OpenAI-compatible
+endpoint (vLLM, SGLang, TGI, …) works.
+
 ```
 chinchilla-bench --base-url http://127.0.0.1:1235/v1 \
                  --model qwen3.8-27b-nvfp4 --pp 200 --tg 128 --c 1 2 3 4
@@ -41,11 +44,14 @@ While running, the terminal shows a swarm grid — one card per agent:
 - **border color** = status: green working · cyan done · red error · dim idle
 - **title** = agent id + role (`A3  tester`)
 - **subtitle** = status + tokens generated so far
-- **body** = the agent's own prompt (grey), its thinking tokens (dim italic,
-  Qwen3-style `reasoning_content`), and the live streaming output (white)
+- **body** = the agent's own prompt (grey) and the live streaming output
+  (white), filling the card; the newest tokens are always visible and the card
+  scrolls as the model streams. Cards resize to fill the whole terminal —
+  with few agents you get a few very tall cards, with many agents a grid.
 - **top bar** = current phase, active concurrency level, `AGENTS LIVE`,
-  `TOKENS/SEC`, `REQ/S (TOTAL)`, `REQ/S (REQ)`, `TOKENS GEN` (total tokens
-  generated), `REQ DONE`, `ELAPSED`
+  `TOKENS/SEC (TOTAL)` (aggregate stream rate), `TOKENS/SEC (REQ)` (per-request
+  generation rate), `REQ/S (TOTAL)` (request completions/s), `TOKENS GEN`
+  (total tokens generated), `REQ DONE`, `ELAPSED`
 
 Keys while running: `q` or `s` = stop (reports what finished), `l` = toggle loop.
 
@@ -53,6 +59,12 @@ Every agent works on a task that matches its role: the prefill prompt starts
 with a role-specific instruction (coder refactors code, researcher summarizes
 papers, …) and is padded to exactly `pp` tokens; the decode prompt is a short
 role-specific instruction.
+
+Reasoning is **disabled by default** (vLLM `chat_template_kwargs
+{"enable_thinking": false}`), so Qwen3-style thinking models generate content
+directly and the cards show the answer immediately. Use `--thinking` to bench
+the thinking mode instead — reasoning tokens then stream dim-italic into the
+cards and are included in the token counts.
 
 ## Setup (uv)
 
@@ -82,6 +94,8 @@ uv run chinchilla-bench \
 | `--temperature` | `0.0` | sampling temperature |
 | `--timeout` | `300` | per-request timeout (s) |
 | `--seed` | `1337` | prompt-generation seed |
+| `--thinking` | off | enable reasoning (Qwen3) thinking mode; off by default so content is generated directly |
+| `--api-key` | `dummy` | API key (vLLM accepts any non-empty string) |
 | `--loop` | off | repeat the whole sweep until stopped |
 | `--output` | `model_result_<model>.txt` | where to write the markdown report |
 | `--no-ui` | off | plain progress lines instead of the swarm UI (good for logs/CI) |
@@ -102,7 +116,7 @@ terminal, plus a markdown copy written to `model_result_<model>.txt`:
 src/chinchilla_llm_bench/
 ├── cli.py      # argparse CLI + entry point
 ├── config.py   # BenchConfig (all settings)
-├── client.py   # OpenAI-compatible streaming client + /tokenize probe
+├── client.py   # streaming client on the official openai SDK + /tokenize probe
 ├── prompt.py   # builds prompts of ~pp tokens (exact via vLLM tokenizer)
 ├── agent.py    # one worker thread = one swarm card
 ├── ui.py       # rich Live swarm grid + top bar + key handling
@@ -124,11 +138,11 @@ enough of the vLLM/OpenAI API (SSE streaming, usage chunks, `/models`,
 
 ## Notes
 
-- Any OpenAI-compatible endpoint works, but `est_ppt` and exact prompt sizing
-  are best with vLLM (it serves `/tokenize`).
-- Thinking models (Qwen3, …) stream `reasoning_content` before the answer;
-  those tokens are counted in the throughput metrics and shown in the cards.
-  If you want pure answer tokens only, start vLLM with thinking disabled
-  (`--reasoning-parser` off / `chat_template_kwargs {"enable_thinking": false}`).
+- Any OpenAI-compatible endpoint works (the client is the official `openai`
+  SDK); `est_ppt` and exact prompt sizing are best with vLLM (it serves
+  `/tokenize`).
+- Reasoning is disabled by default; a thinking model with a 1-token budget
+  would otherwise spend it on reasoning and the prefill test would measure
+  nothing.
 - `--n` should be ≥ the highest `--c` so every agent stays busy.
 - Results depend on server load; run the sweep twice to check stability.

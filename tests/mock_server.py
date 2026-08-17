@@ -49,6 +49,8 @@ class _Handler(BaseHTTPRequestHandler):
                 chunk = {
                     "id": "cmpl-1",
                     "object": "chat.completion.chunk",
+                    "created": 1,
+                    "model": "mock-model",
                     "choices": [{"index": 0, "delta": delta}],
                 }
                 self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
@@ -58,6 +60,8 @@ class _Handler(BaseHTTPRequestHandler):
             usage_chunk = {
                 "id": "cmpl-1",
                 "object": "chat.completion.chunk",
+                "created": 1,
+                "model": "mock-model",
                 "choices": [],
                 "usage": {"prompt_tokens": 10, "completion_tokens": max_tokens},
             }

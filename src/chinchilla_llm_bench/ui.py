@@ -7,6 +7,7 @@ Grid:     one card per agent — status border, id + role, live prompt/output,
 """
 from __future__ import annotations
 
+import math
 import sys
 import threading
 import time
@@ -118,7 +119,7 @@ class SwarmUI:
         self._total_lock = threading.Lock()
         self.tracker = PeakTracker(window=1.0)
         self.req_tracker = RateTracker(window=1.0)
-        self._durations: "deque[float]" = deque(maxlen=64)
+        self._req_rates: "deque[float]" = deque(maxlen=64)
         self._dur_lock = threading.Lock()
         self._start = time.time()
         self._live: Optional[Live] = None
@@ -169,21 +170,22 @@ class SwarmUI:
             self.total_tokens += 1
         self.tracker.add(time.time())
 
-    def on_request_done(self, duration: float) -> None:
-        """Record a completed (ok) request for req/s stats."""
+    def on_request_done(self, duration: float, tokens: int) -> None:
+        """Record a completed (ok) request for req/s and per-request tok/s stats."""
         with self._total_lock:
             self.requests_done += 1
         self.req_tracker.add(time.time())
         with self._dur_lock:
-            self._durations.append(duration)
+            if duration > 1e-9:
+                self._req_rates.append(tokens / duration)
 
     @property
-    def req_per_req(self) -> float:
-        """Per-request completion rate: 1 / mean recent request duration."""
+    def tokens_per_sec_req(self) -> float:
+        """Per-request tokens/sec: mean over recent completed requests."""
         with self._dur_lock:
-            if not self._durations:
+            if not self._req_rates:
                 return 0.0
-            return 1.0 / (sum(self._durations) / len(self._durations))
+            return sum(self._req_rates) / len(self._req_rates)
 
     def set_phase(self, label: str, c: int) -> None:
         self.phase = label
@@ -222,77 +224,98 @@ class SwarmUI:
     def _topbar_right(self) -> Text:
         now = time.time()
         elapsed = now - self._start
-        tps = self.tracker.rate(now)
-        rps_total = self.req_tracker.rate(now)
-        rps_req = self.req_per_req
+        tps_total = self.tracker.rate(now)
+        tps_req = self.tokens_per_sec_req
+        rps = self.req_tracker.rate(now)
         live = sum(1 for a in self.agents if a.snapshot().status == "working")
-        if self.console.width < 150:
+        if self.console.width < 160:
             return Text.assemble(
                 (f"AGENTS {live}", "bold white"),
-                (f"  TOK/S {tps:,.0f}", "bold yellow"),
-                (f"  REQ/S {rps_total:.2f}", "bold green"),
-                (f"  REQ/S·REQ {rps_req:.2f}", "bold green"),
+                (f"  TOK/S {tps_total:,.0f}", "bold yellow"),
+                (f"  TOK/S·REQ {tps_req:,.0f}", "bold yellow"),
+                (f"  REQ/S {rps:.2f}", "bold green"),
                 (f"  TOK GEN {self.total_tokens:,}", "bold cyan"),
                 (f"  REQ {self.requests_done}", "bold blue"),
                 (f"  {elapsed:.0f}s", "bold magenta"),
             )
         return Text.assemble(
             (f"AGENTS LIVE {live}", "bold white"),
-            (f"   TOKENS/SEC {tps:,.0f}", "bold yellow"),
-            (f"   REQ/S (TOTAL) {rps_total:.2f}", "bold green"),
-            (f"   REQ/S (REQ) {rps_req:.2f}", "bold green"),
+            (f"   TOKENS/SEC (TOTAL) {tps_total:,.0f}", "bold yellow"),
+            (f"   TOKENS/SEC (REQ) {tps_req:,.0f}", "bold yellow"),
+            (f"   REQ/S (TOTAL) {rps:.2f}", "bold green"),
             (f"   TOKENS GEN {self.total_tokens:,}", "bold cyan"),
             (f"   REQ DONE {self.requests_done}", "bold blue"),
             (f"   ELAPSED {elapsed:.0f}s", "bold magenta"),
         )
 
     def _grid(self) -> Table:
+        """Lay out the agent cards to fill the whole terminal.
+
+        Card width is fixed; the number of columns fits the terminal width
+        and the card height grows to fill the remaining vertical space, so
+        each card shows as much of the streamed text as possible.
+        """
+        width = self.console.width
+        height = self.console.height
+        card_w = 28  # inner 22 + 2 border + 2 padding
         gap = 2
-        card_w = _CARD_INNER_W + 4  # +2 border +2 padding
-        cols = max(1, min(8, (self.console.width - gap) // (card_w + gap)))
+        cols = max(1, min(8, (width - gap) // (card_w + gap)))
+        n = max(1, len(self.agents))
+        rows = max(1, math.ceil(n / cols))
+        card_h = max(7, (height - 4) // rows)  # top bar + margins
         grid = Table.grid(padding=(0, 1))
         for _ in range(cols):
             grid.add_column(width=card_w, overflow="crop")
-        cards = [self._card(a) for a in self.agents]
+        cards = [self._card(a, card_h) for a in self.agents]
         for i in range(0, len(cards), cols):
             row = cards[i : i + cols]
             while len(row) < cols:
-                row.append(Panel("", box=box.ROUNDED, border_style="dim", height=_CARD_HEIGHT))
+                row.append(Panel("", box=box.ROUNDED, border_style="dim", height=card_h))
             grid.add_row(*row)
         return grid
 
-    def _card(self, agent: Agent) -> Panel:
+    def _card(self, agent: Agent, card_h: int) -> Panel:
         s = agent.snapshot()
         style = STATUS_STYLES.get(s.status, "dim")
         title = f"A{s.idx}  {s.role}"
         subtitle = f"{s.status} · {s.tokens} tok"
         return Panel(
-            self._body(s),
+            self._body(s, card_h),
             title=title,
             subtitle=subtitle,
             border_style=style,
             box=box.ROUNDED,
-            height=_CARD_HEIGHT,
+            height=card_h,
         )
 
-    def _body(self, s: AgentSnapshot) -> Text:
+    def _body(self, s: AgentSnapshot, card_h: int) -> Text:
+        """Prompt (top), then the streamed text filling the card, tail-first.
+
+        The most recent tokens are always visible; the buffer keeps the full
+        generated text so the card scrolls as the model streams.
+        """
         t = Text()
-        inner = _CARD_HEIGHT - 2
+        inner = max(3, card_h - 2)
         prompt_lines = _wrap(s.prompt, _CARD_INNER_W, 2)
         for line in prompt_lines:
             t.append(line, style="grey62")
             t.append("\n")
         room = inner - len(prompt_lines)
-        out_n = min(2, room) if s.output else 0
-        think_n = room - out_n
-        if think_n and s.think:
-            for line in s.think.splitlines()[-think_n:]:
-                t.append(line[:_CARD_INNER_W], style="italic grey42")
+        if room <= 0:
+            return t
+        if s.output:
+            out_n = room if not s.think else max(1, room - 1)
+            if s.think and out_n < room:
+                last_think = s.think.splitlines()[-1]
+                t.append(last_think[:_CARD_INNER_W] or "…", style="italic grey42")
                 t.append("\n")
-        if out_n:
             for line in s.output.splitlines()[-out_n:]:
                 t.append(line[:_CARD_INNER_W], style="white")
                 t.append("\n")
-        if not s.output and not s.think and s.detail:
+        elif s.think:
+            for line in s.think.splitlines()[-room:]:
+                t.append(line[:_CARD_INNER_W], style="italic grey42")
+                t.append("\n")
+        elif s.detail:
             t.append(s.detail[:_CARD_INNER_W], style="cyan")
         return t

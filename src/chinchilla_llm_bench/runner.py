@@ -79,14 +79,18 @@ class BenchRunner:
         self.ui.set_phase("connecting…", 0)
         self.ui.log(f"== connecting to {self.config.base_url} ==")
         try:
-            models = list_models(self.config.base_url, timeout=10)
+            models = list_models(
+                self.config.base_url, api_key=self.config.api_key, timeout=10
+            )
         except Exception as exc:
             raise SystemExit(f"cannot reach {self.config.base_url}: {exc}") from exc
         if self.config.model not in models:
             self.warnings.append(
                 f"model {self.config.model!r} not listed in /models ({', '.join(models)})"
             )
-        self._count, source = resolve_tokenizer(self.config.base_url)
+        self._count, source = resolve_tokenizer(
+            self.config.base_url, api_key=self.config.api_key
+        )
         # One prompt per agent: role-specific opener, padded to pp tokens.
         for agent in self.agents:
             pp_prompt = build_prompt(
@@ -124,6 +128,8 @@ class BenchRunner:
                 1,
                 temperature=self.config.temperature,
                 timeout=self.config.timeout,
+                thinking=self.config.thinking,
+                api_key=self.config.api_key,
             )
             if result.error is None and result.ttfr is not None:
                 times.append(result.ttfr)
@@ -153,7 +159,9 @@ class BenchRunner:
                 self.ui.on_token()
                 agent.add_token(text, kind)
                 with arrivals_lock:
-                    arrivals.append((t_rel, agent.idx))
+                    # t_rel is request-relative; the rate windows below are
+                    # phase-relative, so convert before storing.
+                    arrivals.append((t_start + t_rel, agent.idx))
 
             result = stream_chat(
                 cfg.base_url,
@@ -163,10 +171,12 @@ class BenchRunner:
                 temperature=cfg.temperature,
                 timeout=cfg.timeout,
                 on_token=on_token,
+                thinking=cfg.thinking,
+                api_key=cfg.api_key,
             )
             t_end = time.perf_counter() - t_phase0
             if result.error is None:
-                self.ui.on_request_done(result.duration)
+                self.ui.on_request_done(result.duration, result.completion_tokens)
             rs = RequestStats(
                 agent=agent.idx,
                 test=test,
