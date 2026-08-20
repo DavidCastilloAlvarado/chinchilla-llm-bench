@@ -103,7 +103,8 @@ uv run chinchilla-bench \
   --base-url http://127.0.0.1:8000/v1 \
   --model qwen3.8-27b-nvfp4 \
   --pp 200 --tg 128 \
-  --c 1 2 3 4
+  --c 1 2 3 4 \
+  --header 'X-Tenant-ID: team-a'
 ```
 
 | flag | default | description |
@@ -111,6 +112,7 @@ uv run chinchilla-bench \
 | `--base-url` | — | OpenAI-compatible base URL (required) |
 | `--model` | — | served model name (required) |
 | `--pp` | `200` | prompt tokens for the prefill test |
+| `--pp-output-tokens` | `1` | completion allowance for prefill requests; increase for reasoning models |
 | `--tg` | `128` | tokens to generate for the decode test |
 | `--c` | — | concurrency levels to sweep, e.g. `--c 1 2 3 4` (required) |
 | `--n` | `5` | repetitions per test: each agent runs `n` times (total = `n × c` requests) |
@@ -118,9 +120,13 @@ uv run chinchilla-bench \
 | `--temperature` | `0.0` | sampling temperature |
 | `--timeout` | `300` | per-request timeout (s) |
 | `--seed` | `1337` | prompt-generation seed |
-| `--thinking` | off | enable reasoning (Qwen3) thinking mode; off by default so content is generated directly |
-| `--no-exact-tg` | off | let the model stop at EOS instead of forcing the full tg budget (`min_tokens` + `ignore_eos`; on by default) |
+| `--thinking` | off | enable Qwen3 reasoning; requires `--vllm-extensions` |
+| `--vllm-extensions` | off | send vLLM-only fields such as `return_token_ids`, `min_tokens`, and `chat_template_kwargs` |
+| `--max-completion-tokens` | off | use `max_completion_tokens` rather than `max_tokens` for models that require it |
+| `--reasoning-effort LEVEL` | provider default | provider reasoning effort, such as `minimal`, `low`, `medium`, or `high` |
+| `--no-exact-tg` | off | with `--vllm-extensions`, let the model stop at EOS instead of forcing the full tg budget |
 | `--api-key` | `dummy` | API key (vLLM accepts any non-empty string) |
+| `--header NAME:VALUE` | — | custom HTTP header; repeat for each header |
 | `--loop` | off | repeat the whole sweep until stopped |
 | `--output` | `model_result_<model>.txt` | where to write the markdown report |
 | `--no-ui` | off | plain progress lines instead of the swarm UI (good for logs/CI) |

@@ -8,7 +8,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable, Mapping, Optional
 
 from openai import OpenAI
 
@@ -21,12 +21,17 @@ _CLIENTS: dict[tuple, OpenAI] = {}
 _CLIENTS_LOCK = threading.Lock()
 
 
-def get_client(base_url: str, api_key: str = "dummy", timeout: float = 300.0) -> OpenAI:
+def get_client(
+    base_url: str,
+    api_key: str = "dummy",
+    timeout: float = 300.0,
+    headers: Mapping[str, str] | None = None,
+) -> OpenAI:
     """Thread-safe cached :class:`openai.OpenAI` client for an endpoint.
 
     ``max_retries=0`` is deliberate: hidden retries would skew latency stats.
     """
-    key = (base_url, api_key, timeout)
+    key = (base_url, api_key, timeout, tuple(sorted((headers or {}).items())))
     with _CLIENTS_LOCK:
         client = _CLIENTS.get(key)
         if client is None:
@@ -35,6 +40,7 @@ def get_client(base_url: str, api_key: str = "dummy", timeout: float = 300.0) ->
                 api_key=api_key or "dummy",
                 timeout=timeout,
                 max_retries=0,
+                default_headers=headers,
             )
             _CLIENTS[key] = client
     return client
@@ -122,12 +128,15 @@ def stream_chat(
     thinking: bool = False,
     api_key: str = "dummy",
     min_tokens: int | None = None,
+    headers: Mapping[str, str] | None = None,
+    vllm_extensions: bool = False,
+    max_completion_tokens: bool = False,
+    reasoning_effort: str | None = None,
 ) -> ChatResult:
     """Stream a chat completion from an OpenAI-compatible server.
 
-    ``thinking=False`` (default) disables Qwen3-style reasoning on vLLM via
-    ``chat_template_kwargs {"enable_thinking": false}`` so the model generates
-    content directly — the benchmark measures real content tokens.
+    VLLM-only fields are sent only when ``vllm_extensions=True``. This keeps
+    the default request compatible with standard OpenAI-compatible gateways.
 
     ``min_tokens`` (llama-benchy's ``exact_tg``) sets ``min_tokens`` and
     ``ignore_eos`` so the server generates the full budget instead of
@@ -142,28 +151,35 @@ def stream_chat(
     ``"content"`` or ``"think"`` and ``n_tokens`` is the chunk's real token
     count (1 when the server does not report token IDs).
     """
-    client = get_client(base_url, api_key, timeout)
+    client = get_client(base_url, api_key, timeout, headers)
     result = ChatResult()
     pieces: list[str] = []
     t0 = time.perf_counter()
     content_chunks: list[tuple[float, list[int] | None]] = []
     usage_completion_tokens: int | None = None
     try:
-        extra_body: dict = {
-            "chat_template_kwargs": {"enable_thinking": bool(thinking)},
-            "return_token_ids": True,
-        }
-        if min_tokens is not None:
-            extra_body["min_tokens"] = min_tokens
-            extra_body["ignore_eos"] = True
+        request_kwargs = {}
+        request_kwargs[
+            "max_completion_tokens" if max_completion_tokens else "max_tokens"
+        ] = max_tokens
+        if reasoning_effort is not None:
+            request_kwargs["reasoning_effort"] = reasoning_effort
+        if vllm_extensions:
+            extra_body = {
+                "chat_template_kwargs": {"enable_thinking": bool(thinking)},
+                "return_token_ids": True,
+            }
+            if min_tokens is not None:
+                extra_body["min_tokens"] = min_tokens
+                extra_body["ignore_eos"] = True
+            request_kwargs["extra_body"] = extra_body
         stream = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=max_tokens,
             temperature=temperature,
             stream=True,
             stream_options={"include_usage": True},
-            extra_body=extra_body,
+            **request_kwargs,
         )
         for chunk in stream:
             now = time.perf_counter() - t0
@@ -203,20 +219,25 @@ def stream_chat(
     result.token_times = token_times
     if result.error is None and result.completion_tokens == 0:
         result.error = (
-            "no tokens generated (if the model thinks, its reasoning may have "
-            "eaten the whole token budget — run with thinking disabled)"
+            "no tokens generated (the model may have consumed the completion "
+            "budget while reasoning; increase the budget or lower --reasoning-effort)"
         )
     if result.prompt_tokens == 0:
         result.prompt_tokens = estimate_tokens(prompt)
     return result
 
 
-def measure_latency(base_url: str, api_key: str = "dummy", timeout: float = 10.0) -> float:
+def measure_latency(
+    base_url: str,
+    api_key: str = "dummy",
+    timeout: float = 10.0,
+    headers: Mapping[str, str] | None = None,
+) -> float:
     """Mean RTT of 3 ``GET /models`` probes (llama-benchy's 'api' latency mode).
 
     Used to subtract network/server round-trip from ttfr -> est_ppt.
     """
-    client = get_client(base_url, api_key, timeout)
+    client = get_client(base_url, api_key, timeout, headers)
     samples: list[float] = []
     for _ in range(3):
         t0 = time.perf_counter()
@@ -230,22 +251,30 @@ def measure_latency(base_url: str, api_key: str = "dummy", timeout: float = 10.0
     return sum(samples) / len(samples)
 
 
-def list_models(base_url: str, api_key: str = "dummy", timeout: float = 10.0) -> list[str]:
+def list_models(
+    base_url: str,
+    api_key: str = "dummy",
+    timeout: float = 10.0,
+    headers: Mapping[str, str] | None = None,
+) -> list[str]:
     """Return the served model ids via ``GET /models``."""
-    client = get_client(base_url, api_key, timeout)
+    client = get_client(base_url, api_key, timeout, headers)
     page = client.models.list()
     items = getattr(page, "data", page)
     return [m.id for m in items]
 
 
 def resolve_tokenizer(
-    base_url: str, api_key: str = "dummy", timeout: float = 10.0
+    base_url: str,
+    api_key: str = "dummy",
+    timeout: float = 10.0,
+    headers: Mapping[str, str] | None = None,
 ) -> tuple[TokenCounter, str]:
     """Try vLLM's native ``POST /v1/tokenize``; fall back to the offline estimate.
 
     Returns ``(count_tokens, source_description)``.
     """
-    client = get_client(base_url, api_key, timeout)
+    client = get_client(base_url, api_key, timeout, headers)
 
     def count(text: str) -> int:
         resp = client.post(

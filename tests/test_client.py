@@ -15,6 +15,17 @@ def test_list_models(mock_server):
     assert list_models(mock_server.base_url) == ["mock-model"]
 
 
+def test_client_sends_custom_headers():
+    server = MockVLLMServer(required_header=("X-Tenant-ID", "team-a")).start()
+    try:
+        headers = {"X-Tenant-ID": "team-a"}
+        assert list_models(server.base_url, headers=headers) == ["mock-model"]
+        result = stream_chat(server.base_url, "mock-model", "hello", 1, headers=headers)
+    finally:
+        server.stop()
+    assert result.error is None
+
+
 def test_stream_chat_counts_tokens(mock_server):
     result = stream_chat(mock_server.base_url, "mock-model", "hello", 10)
     assert result.error is None
@@ -35,6 +46,63 @@ def test_stream_chat_single_token(mock_server):
     assert result.completion_tokens == 1
     assert result.ttfr is not None
     assert len(result.token_times) == 1
+
+
+def test_stream_chat_omits_vllm_extensions_by_default(mock_server):
+    result = stream_chat(mock_server.base_url, "mock-model", "hello", 1, min_tokens=1)
+    assert result.error is None
+    _path, body = mock_server.server.request_bodies[-1]
+    assert body["max_tokens"] == 1
+    assert "max_completion_tokens" not in body
+    assert "chat_template_kwargs" not in body
+    assert "return_token_ids" not in body
+    assert "min_tokens" not in body
+    assert "ignore_eos" not in body
+
+
+def test_stream_chat_sends_vllm_extensions_when_enabled(mock_server):
+    result = stream_chat(
+        mock_server.base_url,
+        "mock-model",
+        "hello",
+        1,
+        thinking=True,
+        min_tokens=1,
+        vllm_extensions=True,
+    )
+    assert result.error is None
+    _path, body = mock_server.server.request_bodies[-1]
+    assert body["chat_template_kwargs"] == {"enable_thinking": True}
+    assert body["return_token_ids"] is True
+    assert body["min_tokens"] == 1
+    assert body["ignore_eos"] is True
+
+
+def test_stream_chat_uses_max_completion_tokens_when_requested(mock_server):
+    result = stream_chat(
+        mock_server.base_url,
+        "mock-model",
+        "hello",
+        3,
+        max_completion_tokens=True,
+    )
+    assert result.error is None
+    _path, body = mock_server.server.request_bodies[-1]
+    assert body["max_completion_tokens"] == 3
+    assert "max_tokens" not in body
+
+
+def test_stream_chat_sends_reasoning_effort_when_requested(mock_server):
+    result = stream_chat(
+        mock_server.base_url,
+        "mock-model",
+        "hello",
+        3,
+        reasoning_effort="minimal",
+    )
+    assert result.error is None
+    _path, body = mock_server.server.request_bodies[-1]
+    assert body["reasoning_effort"] == "minimal"
 
 
 def test_stream_chat_no_token_ids_falls_back_to_usage(mock_server):

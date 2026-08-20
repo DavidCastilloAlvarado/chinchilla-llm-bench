@@ -13,6 +13,18 @@ from .runner import BenchRunner
 from .ui import SwarmUI
 
 
+def parse_headers(values: list[str]) -> dict[str, str]:
+    """Parse repeated ``NAME: VALUE`` command-line header values."""
+    headers: dict[str, str] = {}
+    for value in values:
+        name, separator, header_value = value.partition(":")
+        name = name.strip()
+        if not separator or not name:
+            raise ValueError("headers must use the format 'NAME: VALUE'")
+        headers[name] = header_value.strip()
+    return headers
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="chinchilla-bench",
@@ -30,6 +42,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", required=True, help="model name served by vLLM")
     parser.add_argument(
         "--pp", type=int, default=200, help="prompt tokens for the prefill test (default 200)"
+    )
+    parser.add_argument(
+        "--pp-output-tokens",
+        type=int,
+        default=1,
+        help="completion allowance for prefill requests (default 1)",
     )
     parser.add_argument(
         "--tg", type=int, default=128, help="tokens to generate for the decode test (default 128)"
@@ -60,21 +78,43 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--thinking",
         action="store_true",
-        help="enable reasoning models (Qwen3) thinking; off by default so content "
-        "is generated directly (vLLM chat_template_kwargs enable_thinking=false)",
+        help="enable Qwen3 reasoning; requires --vllm-extensions",
+    )
+    parser.add_argument(
+        "--vllm-extensions",
+        action="store_true",
+        help="send vLLM-only fields for thinking, exact generation, and token IDs",
+    )
+    parser.add_argument(
+        "--max-completion-tokens",
+        action="store_true",
+        help="use max_completion_tokens instead of max_tokens for newer OpenAI models",
+    )
+    parser.add_argument(
+        "--reasoning-effort",
+        metavar="LEVEL",
+        default=None,
+        help="provider reasoning effort, e.g. minimal, low, medium, or high",
     )
     parser.add_argument(
         "--no-exact-tg",
         dest="exact_tg",
         action="store_false",
         default=True,
-        help="let the model stop at EOS instead of forcing the full tg budget "
-        "(default: exact_tg on — vLLM min_tokens + ignore_eos)",
+        help="with --vllm-extensions, let the model stop at EOS instead of "
+        "forcing the full tg budget",
     )
     parser.add_argument(
         "--api-key",
         default="dummy",
         help="API key (vLLM accepts any non-empty string; default 'dummy')",
+    )
+    parser.add_argument(
+        "--header",
+        action="append",
+        default=[],
+        metavar="NAME:VALUE",
+        help="custom HTTP header; repeat for each header",
     )
     parser.add_argument(
         "--loop",
@@ -105,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
             base_url=args.base_url,
             model=args.model,
             pp=args.pp,
+            pp_output_tokens=args.pp_output_tokens,
             tg=args.tg,
             concurrency=list(args.c),
             n=args.n,
@@ -115,7 +156,11 @@ def main(argv: list[str] | None = None) -> int:
             loop=args.loop,
             thinking=args.thinking,
             exact_tg=args.exact_tg,
+            vllm_extensions=args.vllm_extensions,
+            max_completion_tokens=args.max_completion_tokens,
+            reasoning_effort=args.reasoning_effort,
             api_key=args.api_key,
+            headers=parse_headers(args.header),
         )
     except ValueError as exc:
         console.print(f"[bold red]invalid settings:[/] {exc}")
