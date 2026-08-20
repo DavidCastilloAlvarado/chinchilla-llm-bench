@@ -79,7 +79,10 @@ class BenchRunner:
         self.ui.log(f"== connecting to {self.config.base_url} ==")
         try:
             models = list_models(
-                self.config.base_url, api_key=self.config.api_key, timeout=10
+                self.config.base_url,
+                api_key=self.config.api_key,
+                timeout=10,
+                headers=self.config.headers,
             )
         except Exception as exc:
             raise SystemExit(f"cannot reach {self.config.base_url}: {exc}") from exc
@@ -88,7 +91,7 @@ class BenchRunner:
                 f"model {self.config.model!r} not listed in /models ({', '.join(models)})"
             )
         self._count, source = resolve_tokenizer(
-            self.config.base_url, api_key=self.config.api_key
+            self.config.base_url, api_key=self.config.api_key, headers=self.config.headers
         )
         # One prompt per agent: role-specific opener, padded to pp tokens.
         for agent in self.agents:
@@ -126,11 +129,15 @@ class BenchRunner:
                 cfg.base_url,
                 cfg.model,
                 "Warmup request, answer with a single word.",
-                1,
+                cfg.pp_output_tokens,
                 temperature=cfg.temperature,
                 timeout=cfg.timeout,
                 thinking=cfg.thinking,
                 api_key=cfg.api_key,
+                headers=cfg.headers,
+                vllm_extensions=cfg.vllm_extensions,
+                max_completion_tokens=cfg.max_completion_tokens,
+                reasoning_effort=cfg.reasoning_effort,
             )
 
     # --------------------------------------------------------------- latency
@@ -142,14 +149,14 @@ class BenchRunner:
         self.ui.set_phase("measuring latency", 0)
         self.ui.log("== measuring network latency (3x GET /models) ==")
         self._latency = measure_latency(
-            self.config.base_url, api_key=self.config.api_key
+            self.config.base_url, api_key=self.config.api_key, headers=self.config.headers
         )
         self.ui.log(f"== latency: {self._latency * 1000:.2f} ms ==")
 
     # ----------------------------------------------------------------- phases
     def _phase(self, test: str, c: int) -> None:
         cfg = self.config
-        max_tokens = 1 if test == "pp" else cfg.tg
+        max_tokens = cfg.pp_output_tokens if test == "pp" else cfg.tg
         prompts = self._pp_prompts if test == "pp" else self._tg_prompts
         label = f"{cfg.label(test)} (c{c})"
         self.ui.set_phase(label, c)
@@ -184,6 +191,10 @@ class BenchRunner:
                 thinking=cfg.thinking,
                 api_key=cfg.api_key,
                 min_tokens=min_tokens,
+                headers=cfg.headers,
+                vllm_extensions=cfg.vllm_extensions,
+                max_completion_tokens=cfg.max_completion_tokens,
+                reasoning_effort=cfg.reasoning_effort,
             )
             t_end = time.perf_counter() - t_phase0
             if result.error is None:

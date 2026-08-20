@@ -2,9 +2,18 @@
 from chinchilla_llm_bench.config import BenchConfig
 from chinchilla_llm_bench.runner import BenchRunner
 from chinchilla_llm_bench.ui import SwarmUI
+from mock_server import MockVLLMServer
 
 
-def _run(mock_server, n=3, concurrency=(1, 2)):
+def _run(
+    mock_server,
+    n=3,
+    concurrency=(1, 2),
+    headers=None,
+    max_completion_tokens=False,
+    pp_output_tokens=1,
+    reasoning_effort=None,
+):
     config = BenchConfig(
         base_url=mock_server.base_url,
         model="mock-model",
@@ -13,6 +22,10 @@ def _run(mock_server, n=3, concurrency=(1, 2)):
         concurrency=list(concurrency),
         n=n,
         timeout=30.0,
+        headers=headers or {},
+        max_completion_tokens=max_completion_tokens,
+        pp_output_tokens=pp_output_tokens,
+        reasoning_effort=reasoning_effort,
     )
     ui = SwarmUI(config, quiet=True)
     runner = BenchRunner(config, ui)
@@ -23,6 +36,46 @@ def test_full_sweep_produces_all_phases(mock_server):
     phases = _run(mock_server)
     labels = [(p.test, p.concurrency) for p in phases]
     assert labels == [("pp", 1), ("tg", 1), ("pp", 2), ("tg", 2)]
+
+
+def test_full_sweep_sends_custom_headers():
+    server = MockVLLMServer(required_header=("X-Tenant-ID", "team-a")).start()
+    try:
+        phases = _run(server, n=1, concurrency=(1,), headers={"X-Tenant-ID": "team-a"})
+    finally:
+        server.stop()
+    assert all(phase.stats.n_failed == 0 for phase in phases)
+
+
+def test_full_sweep_uses_max_completion_tokens():
+    server = MockVLLMServer().start()
+    try:
+        phases = _run(server, n=1, concurrency=(1,), max_completion_tokens=True)
+    finally:
+        server.stop()
+    assert all(phase.stats.n_failed == 0 for phase in phases)
+    chat_bodies = [body for path, body in server.server.request_bodies if path.endswith("/chat/completions")]
+    assert chat_bodies
+    assert all("max_completion_tokens" in body for body in chat_bodies)
+    assert all("max_tokens" not in body for body in chat_bodies)
+
+
+def test_full_sweep_forwards_reasoning_settings():
+    server = MockVLLMServer().start()
+    try:
+        phases = _run(
+            server,
+            n=1,
+            concurrency=(1,),
+            pp_output_tokens=32,
+            reasoning_effort="minimal",
+        )
+    finally:
+        server.stop()
+    assert all(phase.stats.n_failed == 0 for phase in phases)
+    chat_bodies = [body for path, body in server.server.request_bodies if path.endswith("/chat/completions")]
+    assert chat_bodies[0]["max_tokens"] == 32
+    assert all(body["reasoning_effort"] == "minimal" for body in chat_bodies)
 
 
 def test_phase_stats_are_sane(mock_server):
