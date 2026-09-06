@@ -131,6 +131,23 @@ uv run chinchilla-bench \
 | `--output` | `model_result_<model>.txt` | where to write the markdown report |
 | `--no-ui` | off | plain progress lines instead of the swarm UI (good for logs/CI) |
 
+### Which flags for which backend
+
+The default request is a plain, standard OpenAI-compatible one — no vLLM-only
+fields — so it works out of the box with gateways and hosted APIs. The live
+UI also follows models that stream their thinking (as `reasoning_content` or
+`reasoning`) even when no vLLM fields are sent.
+
+| Target | Command shape |
+|---|---|
+| GPT-5 on Azure OpenAI | `--max-completion-tokens` (GPT-5 rejects `max_tokens`) plus `--reasoning-effort low` to cap thinking |
+| vLLM (exact, content-only semantics) | `--vllm-extensions` — restores `enable_thinking: false`, `return_token_ids`, and `min_tokens`/`ignore_eos` |
+| Any standard gateway | plain command — the UI updates live even when the model thinks |
+
+Note: with a thinking model and no `--vllm-extensions` (or
+`--reasoning-effort`), the tg budget is spent on reasoning tokens, so that is
+what gets measured and shown (in italics) in the swarm UI.
+
 The run ends with the settings summary and the results table printed to the
 terminal, plus a markdown copy written to `model_result_<model>.txt`:
 
