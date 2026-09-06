@@ -144,6 +144,35 @@ UI also follows models that stream their thinking (as `reasoning_content` or
 | vLLM (exact, content-only semantics) | `--vllm-extensions` — restores `enable_thinking: false`, `return_token_ids`, and `min_tokens`/`ignore_eos` |
 | Any standard gateway | plain command — the UI updates live even when the model thinks |
 
+```bash
+# GPT-5 on Azure OpenAI
+uv run chinchilla-bench \
+  --base-url https://<resource>.openai.azure.com/openai/deployments/gpt-5 \
+  --model gpt-5 \
+  --api-key <azure-key> \
+  --max-completion-tokens \
+  --reasoning-effort low \
+  --pp 200 --tg 128 --c 1 2 4
+```
+
+```bash
+# vLLM, exact content-only semantics: thinking forced off,
+# exact token counts (return_token_ids), full tg budget (min_tokens/ignore_eos)
+uv run chinchilla-bench \
+  --base-url http://<host>:8000/v1 \
+  --model qwen3.8-27b-nvfp4 \
+  --vllm-extensions \
+  --pp 200 --tg 128 --c 1 2 3 4
+```
+
+```bash
+# Any standard OpenAI-compatible endpoint: plain command, no extra flags
+uv run chinchilla-bench \
+  --base-url http://<host>:8000/v1 \
+  --model some-reasoning-model \
+  --pp 500 --tg 256 --c 2 --n 1
+```
+
 Note: with a thinking model and no `--vllm-extensions` (or
 `--reasoning-effort`), the tg budget is spent on reasoning tokens, so that is
 what gets measured and shown (in italics) in the swarm UI.
