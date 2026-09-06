@@ -48,9 +48,10 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
+            reasoning_field = getattr(self.server, "reasoning_field", "reasoning_content")
             for i in range(max_tokens):
                 if i < reasoning:
-                    delta = {"reasoning_content": f"thk{i} "}
+                    delta = {reasoning_field: f"thk{i} "}
                 else:
                     delta = {"content": f"tok{i} "}
                 choice = {"index": 0, "delta": delta}
@@ -101,12 +102,14 @@ class MockVLLMServer:
         reasoning_tokens: int = 0,
         token_ids: bool = True,
         required_header: tuple[str, str] | None = None,
+        reasoning_field: str = "reasoning_content",
     ):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self.server.token_delay = token_delay
         self.server.reasoning_tokens = reasoning_tokens
         self.server.token_ids = token_ids
         self.server.required_header = required_header
+        self.server.reasoning_field = reasoning_field
         self.server.request_bodies = []
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 

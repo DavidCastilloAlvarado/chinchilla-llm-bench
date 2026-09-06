@@ -58,6 +58,22 @@ class ChatResult:
     error: Optional[str] = None
 
 
+def _delta_text(delta, name: str) -> str | None:
+    """Read a delta field, declared or extra (e.g. ``reasoning``).
+
+    Reasoning tokens stream under different names depending on the server:
+    ``reasoning_content`` (OpenAI-compatible / vLLM reasoning parsers) or
+    ``reasoning`` (newer vLLM). Neither is declared by the SDK, so fall back
+    to ``model_extra``.
+    """
+    value = getattr(delta, name, None)
+    if value is None:
+        extra = getattr(delta, "model_extra", None)
+        if isinstance(extra, dict):
+            value = extra.get(name)
+    return value
+
+
 def _token_ids_of(choice) -> list[int] | None:
     """vLLM's ``return_token_ids`` extension: token IDs ride along per chunk."""
     ids = getattr(choice, "token_ids", None)
@@ -200,7 +216,13 @@ def stream_chat(
             piece = getattr(delta, "content", None)
             kind = "content"
             if not piece:
-                piece = getattr(delta, "reasoning_content", None)
+                # Thinking streams: 'reasoning_content' (reasoning parsers)
+                # or 'reasoning' (vLLM >= 0.26). Without this, a thinking
+                # model (e.g. Qwen3 with thinking on by default) produces
+                # no on_token calls at all and the live UI never updates.
+                piece = _delta_text(delta, "reasoning_content") or _delta_text(
+                    delta, "reasoning"
+                )
                 kind = "think"
             if piece:
                 if result.ttft is None:

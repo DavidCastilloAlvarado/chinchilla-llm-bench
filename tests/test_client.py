@@ -189,6 +189,36 @@ def test_stream_chat_counts_reasoning_tokens():
     assert [k for _t, _r, k in seen[4:]] == ["content"] * 4
 
 
+def test_stream_chat_counts_reasoning_field_tokens():
+    """vLLM >= 0.26 streams thinking under delta field 'reasoning' (not
+    'reasoning_content'). Thinking chunks must still feed on_token — without
+    this the live UI never updates for thinking models (the Qwen3 bug)."""
+    server = MockVLLMServer(
+        token_delay=0.001, reasoning_tokens=6, token_ids=False, reasoning_field="reasoning"
+    ).start()
+    try:
+        seen = []
+        result = stream_chat(
+            server.base_url,
+            "mock-model",
+            "hello",
+            10,
+            on_token=lambda text, t_rel, kind, n_tokens: seen.append((text, t_rel, kind)),
+        )
+    finally:
+        server.stop()
+    assert result.error is None
+    # every streamed token (thinking + content) must reach the callback
+    assert len(seen) == 10
+    assert [k for _t, _r, k in seen[:6]] == ["think"] * 6
+    assert [k for _t, _r, k in seen[6:]] == ["content"] * 4
+    # thinking sets ttft even before any content arrives
+    assert result.ttft is not None
+    assert result.ttft <= min(t for _text, t, _k in seen)
+    assert result.completion_tokens == 10  # from the usage chunk
+    assert len(result.token_times) == 10
+
+
 def test_stream_chat_http_error():
     result = stream_chat("http://127.0.0.1:9/v1", "mock-model", "hello", 4, timeout=2)
     assert result.error is not None
