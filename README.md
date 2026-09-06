@@ -72,9 +72,16 @@ While running, the terminal shows a swarm grid — one card per agent:
 - **top bar** = current phase, active concurrency level, `AGENTS LIVE`,
   `TOKENS/SEC (TOTAL)` (aggregate stream rate, real tokens), `TOKENS/SEC (REQ)`
   (per-request generation rate), `REQ/S (TOTAL)` (request completions/s),
-  `TOKENS GEN` (total tokens generated), `REQ DONE`, `ELAPSED`
+  `TOKENS GEN` (total tokens generated), `REQ DONE`, `MAXC`, `ELAPSED`.
+  `MAXC` is the peak number of requests *generating tokens at the same time*
+  during the tg phase — i.e. the real decode concurrency the server achieves,
+  excluding prompt processing (a server that queues requests will show MAXC
+  well below `--c`).
 
-Keys while running: `q` or `s` = stop (reports what finished), `l` = toggle loop.
+Keys while running: `q` or `s` = stop (reports what finished), `l` = toggle
+loop. When the grid is taller than the terminal it becomes a scroll window
+(the top bar shows e.g. `⌄ 1-3/8 scroll`): scroll with the arrow keys or
+`j`/`k`, page with `PgUp`/`PgDn`, jump to top/bottom with `Home`/`End`.
 
 ![The agent-swarm UI mid-run: tg1024 (c4), four agents streaming output, five idle](docs/swarm.png)
 

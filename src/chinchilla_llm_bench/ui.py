@@ -1,9 +1,11 @@
 """Live 'agent swarm' view: a rich Live grid of per-agent cards.
 
 Top bar:  CHINCHILLA · LLM SWARM  [1] [2] [3] [4]  ■ STOP  ✓ loop
-          AGENTS LIVE · TOKENS/SEC · TOKENS TOTAL · ELAPSED
+          AGENTS LIVE · TOKENS/SEC · TOKENS TOTAL · MAXC · ELAPSED
 Grid:     one card per agent — status border, id + role, live prompt/output,
-          token counter. Keys: q/s = stop, l = toggle loop.
+          token counter. Keys: q/s = stop, l = toggle loop,
+          arrows / j k / PgUp PgDn / Home End = scroll the grid
+          (active when the grid is taller than the terminal).
 """
 from __future__ import annotations
 
@@ -59,7 +61,8 @@ def _flow(text: str, width: int, max_lines: int) -> list[str]:
 
 
 class InputWatcher:
-    """Reads single keys from a POSIX tty in cbreak mode (best effort)."""
+    """Reads keys (plus arrow/PgUp/Home escape sequences) from a POSIX tty
+    in cbreak mode (best effort)."""
 
     def __init__(self, on_key: Callable[[str], None]):
         self._on_key = on_key
@@ -86,6 +89,8 @@ class InputWatcher:
         self._thread.start()
 
     def _read(self) -> None:
+        import select
+
         while True:
             try:
                 ch = sys.stdin.read(1)
@@ -93,7 +98,42 @@ class InputWatcher:
                 return
             if not ch:
                 return
-            self._on_key(ch)
+            if ch == "\x1b":
+                # Escape sequence (arrow keys, PgUp/PgDn, Home/End): read the
+                # rest with a short timeout so a bare Esc does not hang.
+                seq = ch
+                for _ in range(2):
+                    try:
+                        ready, _, _ = select.select([self._fd], [], [], 0.05)
+                    except Exception:
+                        ready = []
+                    if not ready:
+                        break
+                    try:
+                        part = sys.stdin.read(1)
+                    except Exception:
+                        break
+                    if not part:
+                        break
+                    seq += part
+                key = self._map_seq(seq)
+                if key is not None:
+                    self._on_key(key)
+            else:
+                self._on_key(ch)
+
+    @staticmethod
+    def _map_seq(seq: str) -> Optional[str]:
+        return {
+            "\x1b[A": "up",
+            "\x1b[B": "down",
+            "\x1b[C": "right",
+            "\x1b[D": "left",
+            "\x1b[5~": "pgup",
+            "\x1b[6~": "pgdown",
+            "\x1b[H": "home",
+            "\x1b[F": "end",
+        }.get(seq)
 
     def stop(self) -> None:
         if self._old is not None and self._fd is not None:
@@ -133,6 +173,15 @@ class SwarmUI:
         self._watcher: Optional[InputWatcher] = None
         self.loop = config.loop
         self._stop_flag = False
+        # Scroll state, active only when the grid is taller than the terminal.
+        self.scroll = 0
+        self._scrollable = False
+        self._visible_rows = 1
+        self._total_rows = 1
+        # MAXC: peak number of requests generating tokens concurrently (TG).
+        self._gen_lock = threading.Lock()
+        self._generating = 0
+        self.max_gen_concurrency = 0
 
     # -- lifecycle -------------------------------------------------------------
     def start(self) -> None:
@@ -170,6 +219,19 @@ class SwarmUI:
             self.request_stop()
         elif key == "l":
             self.loop = not self.loop
+        elif key in ("up", "k"):
+            self.scroll = max(0, self.scroll - 1)
+        elif key in ("down", "j"):
+            self.scroll = min(self._total_rows - self._visible_rows, self.scroll + 1)
+        elif key == "pgup":
+            self.scroll = max(0, self.scroll - self._visible_rows)
+        elif key == "pgdown":
+            self.scroll = min(self._total_rows - self._visible_rows,
+                              self.scroll + self._visible_rows)
+        elif key == "home":
+            self.scroll = 0
+        elif key == "end":
+            self.scroll = self._total_rows - self._visible_rows
 
     # -- feed (called by agents/runner) -------------------------------------------
     def on_token(self, n_tokens: int = 1) -> None:
@@ -182,6 +244,18 @@ class SwarmUI:
         with self._total_lock:
             self.requests_done += 1
         self.req_tracker.add(time.time())
+
+    def on_gen_start(self) -> None:
+        """A TG request produced its first token: it is generating now."""
+        with self._gen_lock:
+            self._generating += 1
+            if self._generating > self.max_gen_concurrency:
+                self.max_gen_concurrency = self._generating
+
+    def on_gen_end(self) -> None:
+        """A TG request finished (or errored) generating tokens."""
+        with self._gen_lock:
+            self._generating = max(0, self._generating - 1)
 
     def set_phase(self, label: str, c: int) -> None:
         self.phase = label
@@ -215,6 +289,12 @@ class SwarmUI:
             left.append(" ", "")
         left.append("■ STOP (q)  ", "bold red" if self.stopped else "dim")
         left.append("✓ loop (l)  ", "bold green" if self.loop else "dim")
+        if self._scrollable:
+            left.append(
+                f"⌄ {self.scroll + 1}-{self.scroll + self._visible_rows}/{self._total_rows} "
+                f"scroll: ↑↓ PgUp PgDn  ",
+                "dim",
+            )
         return left
 
     def _topbar_right(self) -> Text:
@@ -233,6 +313,7 @@ class SwarmUI:
                 (f"  REQ/S {rps:.2f}", "bold green"),
                 (f"  TOK GEN {self.total_tokens:,}", "bold cyan"),
                 (f"  REQ {self.requests_done}", "bold blue"),
+                (f"  MAXC {self.max_gen_concurrency}", "bold red"),
                 (f"  {elapsed:.0f}s", "bold magenta"),
             )
         return Text.assemble(
@@ -242,6 +323,7 @@ class SwarmUI:
             (f"   REQ/S (TOTAL) {rps:.2f}", "bold green"),
             (f"   TOKENS GEN {self.total_tokens:,}", "bold cyan"),
             (f"   REQ DONE {self.requests_done}", "bold blue"),
+            (f"   MAXC {self.max_gen_concurrency}", "bold red"),
             (f"   ELAPSED {elapsed:.0f}s", "bold magenta"),
         )
 
@@ -250,7 +332,10 @@ class SwarmUI:
 
         Cards are sized wide (enough to read a sentence per line) and tall
         (enough to show a good chunk of the streamed text); the grid fills
-        the terminal with as many wide columns as fit.
+        the terminal with as many wide columns as fit. If every row does not
+        fit vertically, the grid becomes a scrolling window: cards keep a
+        comfortable minimum height and only the visible rows are rendered
+        (scroll with the arrow keys / j k / PgUp PgDn / Home End).
         """
         width = self.console.width
         height = self.console.height
@@ -261,15 +346,35 @@ class SwarmUI:
         cols = max(1, min(8, (width - gap) // (card_w + gap)))
         n = max(1, len(self.agents))
         rows = max(1, math.ceil(n / cols))
-        card_h = max(7, (height - 4) // rows)  # top bar + margins
+        self._total_rows = rows
+        min_card = 7
+        avail = max(min_card + 2, height - 4)  # top bar + margins
+        if rows * min_card <= avail:
+            # Everything fits: size the cards to fill, no scrolling.
+            self._scrollable = False
+            self._visible_rows = rows
+            self.scroll = 0
+            card_h = max(min_card, avail // rows)
+            first, last = 0, rows
+        else:
+            # More rows than fit: fixed-height cards + scroll window.
+            self._scrollable = True
+            self._visible_rows = max(1, avail // min_card)
+            card_h = min_card
+            self.scroll = max(0, min(self.scroll, rows - self._visible_rows))
+            first = self.scroll
+            last = self.scroll + self._visible_rows
         grid = Table.grid(padding=(0, 1))
         for _ in range(cols):
             grid.add_column(width=card_w, overflow="crop")
-        cards = [self._card(a, card_h, inner_w) for a in self.agents]
-        for i in range(0, len(cards), cols):
-            row = cards[i : i + cols]
-            while len(row) < cols:
-                row.append(Panel("", box=box.ROUNDED, border_style="dim", height=card_h))
+        for r in range(first, last):
+            row = []
+            for cidx in range(cols):
+                i = r * cols + cidx
+                if i < len(self.agents):
+                    row.append(self._card(self.agents[i], card_h, inner_w))
+                else:
+                    row.append(Panel("", box=box.ROUNDED, border_style="dim", height=card_h))
             grid.add_row(*row)
         return grid
 

@@ -170,32 +170,44 @@ class BenchRunner:
 
         def execute(agent: Agent, spec: RequestSpec):
             t_start = time.perf_counter() - t_phase0
+            gen_started = False
 
             def on_token(
                 text: str, t_rel: float, kind: str = "content", n_tokens: int = 1
             ):
+                nonlocal gen_started
+                # First streamed token (TTFT): the request is generating now.
+                # Counted only for tg, so MAXC is "really producing tokens
+                # at the same time", excluding prompt processing.
+                if test == "tg" and not gen_started:
+                    gen_started = True
+                    self.ui.on_gen_start()
                 self.ui.on_token(n_tokens)
                 agent.add_token(text, kind, n_tokens)
 
             # llama-benchy's exact_tg: force the full budget server-side.
             min_tokens = cfg.tg if (test == "tg" and cfg.exact_tg) else None
 
-            result = stream_chat(
-                cfg.base_url,
-                cfg.model,
-                spec.prompt,
-                spec.max_tokens,
-                temperature=cfg.temperature,
-                timeout=cfg.timeout,
-                on_token=on_token,
-                thinking=cfg.thinking,
-                api_key=cfg.api_key,
-                min_tokens=min_tokens,
-                headers=cfg.headers,
-                vllm_extensions=cfg.vllm_extensions,
-                max_completion_tokens=cfg.max_completion_tokens,
-                reasoning_effort=cfg.reasoning_effort,
-            )
+            try:
+                result = stream_chat(
+                    cfg.base_url,
+                    cfg.model,
+                    spec.prompt,
+                    spec.max_tokens,
+                    temperature=cfg.temperature,
+                    timeout=cfg.timeout,
+                    on_token=on_token,
+                    thinking=cfg.thinking,
+                    api_key=cfg.api_key,
+                    min_tokens=min_tokens,
+                    headers=cfg.headers,
+                    vllm_extensions=cfg.vllm_extensions,
+                    max_completion_tokens=cfg.max_completion_tokens,
+                    reasoning_effort=cfg.reasoning_effort,
+                )
+            finally:
+                if test == "tg" and gen_started:
+                    self.ui.on_gen_end()
             t_end = time.perf_counter() - t_phase0
             if result.error is None:
                 self.ui.on_request_done(result.duration, result.completion_tokens)
