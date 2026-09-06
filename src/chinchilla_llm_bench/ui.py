@@ -89,38 +89,49 @@ class InputWatcher:
         self._thread.start()
 
     def _read(self) -> None:
+        import os
         import select
 
+        fd = self._fd
         while True:
             try:
-                ch = sys.stdin.read(1)
-            except Exception:
+                ready, _, _ = select.select([fd], [], [])
+            except (OSError, ValueError):
                 return
-            if not ch:
+            try:
+                data = os.read(fd, 1)
+            except OSError:
                 return
-            if ch == "\x1b":
+            if not data:
+                return
+            if data == b"\x1b":
                 # Escape sequence (arrow keys, PgUp/PgDn, Home/End): read the
                 # rest with a short timeout so a bare Esc does not hang.
-                seq = ch
-                for _ in range(2):
+                # Raw os.read is essential: sys.stdin is buffered, so a
+                # read(1) can swallow the whole sequence and select() on the
+                # fd would then report "no data", eating the key.
+                seq = data
+                for _ in range(4):
                     try:
-                        ready, _, _ = select.select([self._fd], [], [], 0.05)
-                    except Exception:
+                        ready, _, _ = select.select([fd], [], [], 0.05)
+                    except (OSError, ValueError):
                         ready = []
                     if not ready:
                         break
                     try:
-                        part = sys.stdin.read(1)
-                    except Exception:
+                        part = os.read(fd, 1)
+                    except OSError:
                         break
                     if not part:
                         break
                     seq += part
-                key = self._map_seq(seq)
+                    if part == b"~" or (len(seq) >= 3 and chr(part[0]).isalpha()):
+                        break
+                key = self._map_seq(seq.decode("ascii", "replace"))
                 if key is not None:
                     self._on_key(key)
             else:
-                self._on_key(ch)
+                self._on_key(chr(data[0]))
 
     @staticmethod
     def _map_seq(seq: str) -> Optional[str]:
@@ -131,6 +142,8 @@ class InputWatcher:
             "\x1b[D": "left",
             "\x1b[5~": "pgup",
             "\x1b[6~": "pgdown",
+            "\x1b[7~": "home",
+            "\x1b[8~": "end",
             "\x1b[H": "home",
             "\x1b[F": "end",
         }.get(seq)
