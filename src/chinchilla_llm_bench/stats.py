@@ -170,5 +170,33 @@ class PhaseStats:
     peak_total: tuple[float, float]  # peak t/s over merged per-wave tokens
     peak_req: tuple[float, float]  # mean per-request peak t/s
     ttfr: tuple[float, float]  # seconds
-    est_ppt: tuple[float, float]  # seconds
+    net_ttft: tuple[float, float]  # seconds: client TTFT less measured RTT
     e2e_ttft: tuple[float, float]  # seconds
+
+
+@dataclass(frozen=True)
+class RunSummary:
+    """Run-wide counters shown after all benchmark phases complete."""
+
+    duration_seconds: float
+    max_concurrency: int
+    request_attempts: int
+    http_errors: int
+
+    @property
+    def duration_label(self) -> str:
+        total_centiseconds = round(max(0.0, self.duration_seconds) * 100)
+        hours, remainder = divmod(total_centiseconds, 360_000)
+        minutes, centiseconds = divmod(remainder, 6_000)
+        seconds = centiseconds / 100
+        if hours:
+            return f"{hours}h {minutes}m {seconds:.2f}s"
+        if minutes:
+            return f"{minutes}m {seconds:.2f}s"
+        return f"{seconds:.2f}s"
+
+    @property
+    def http_error_percentage(self) -> float:
+        if self.request_attempts == 0:
+            return 0.0
+        return 100 * self.http_errors / self.request_attempts

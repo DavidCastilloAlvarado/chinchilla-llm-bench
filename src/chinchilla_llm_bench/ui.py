@@ -1,7 +1,7 @@
 """Live 'agent swarm' view: a rich Live grid of per-agent cards.
 
 Top bar:  CHINCHILLA · LLM SWARM  [1] [2] [3] [4]  ■ STOP  ✓ loop
-          AGENTS LIVE · TOKENS/SEC · TOKENS TOTAL · MAXC · ELAPSED
+          AGENTS LIVE · TOKENS/SEC · CURC · MAXC · HTTP ERR · ELAPSED
 Grid:     one card per agent — status border, id + role, live prompt/output,
           token counter. Keys: q/s = stop, l = toggle loop,
           arrows / j k / PgUp PgDn / Home End = scroll the grid
@@ -24,7 +24,7 @@ from rich.text import Text
 
 from .agent import Agent, AgentSnapshot, STATUS_STYLES
 from .config import BenchConfig
-from .stats import PeakTracker, RateTracker
+from .stats import PeakTracker, RateTracker, RunSummary
 
 
 def _flow(text: str, width: int, max_lines: int) -> list[str]:
@@ -87,6 +87,10 @@ class InputWatcher:
             return
         self._thread = threading.Thread(target=self._read, daemon=True)
         self._thread.start()
+
+    @property
+    def active(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
 
     def _read(self) -> None:
         import os
@@ -177,21 +181,25 @@ class SwarmUI:
         self.phase = "connecting"
         self.active_c = 0
         self.total_tokens = 0
+        self.request_attempts = 0
         self.requests_done = 0
+        self.http_errors = 0
         self._total_lock = threading.Lock()
         self.tracker = PeakTracker(window=1.0)
         self.req_tracker = RateTracker(window=1.0)
-        self._start = time.time()
+        self._start = time.perf_counter()
         self._live: Optional[Live] = None
         self._watcher: Optional[InputWatcher] = None
         self.loop = config.loop
         self._stop_flag = False
+        self._stop_event = threading.Event()
+        self._finished_at: float | None = None
         # Scroll state, active only when the grid is taller than the terminal.
         self.scroll = 0
         self._scrollable = False
         self._visible_rows = 1
         self._total_rows = 1
-        # MAXC: peak number of requests generating tokens concurrently (TG).
+        # MAXC: peak number of requests generating tokens concurrently.
         self._gen_lock = threading.Lock()
         self._generating = 0
         self.max_gen_concurrency = 0
@@ -222,6 +230,28 @@ class SwarmUI:
     # -- control -----------------------------------------------------------------
     def request_stop(self) -> None:
         self._stop_flag = True
+        self._stop_event.set()
+
+    def finish(self) -> None:
+        """Freeze live counters and present the completed benchmark state."""
+        if self._finished_at is None:
+            self._finished_at = time.perf_counter()
+        self.set_phase("FINISHED - PRESS Q TO EXIT", 0)
+
+    def wait_for_exit(self) -> None:
+        """Keep the completed live screen visible until the user exits."""
+        self.finish()
+        if (
+            self.quiet
+            or self.stopped
+            or not self.console.is_terminal
+            or self._watcher is None
+            or not self._watcher.active
+        ):
+            return
+        watcher = self._watcher
+        while watcher.active and not self._stop_event.wait(0.1):
+            pass
 
     @property
     def stopped(self) -> bool:
@@ -258,17 +288,49 @@ class SwarmUI:
             self.requests_done += 1
         self.req_tracker.add(time.time())
 
+    def on_request_attempt(self) -> None:
+        """Record one outbound chat-completion request, including warmups."""
+        with self._total_lock:
+            self.request_attempts += 1
+
+    def on_http_error(self) -> None:
+        """Record one HTTP 4xx/5xx benchmark response."""
+        with self._total_lock:
+            self.http_errors += 1
+
     def on_gen_start(self) -> None:
-        """A TG request produced its first token: it is generating now."""
+        """A request produced its first token: it is generating now."""
         with self._gen_lock:
             self._generating += 1
             if self._generating > self.max_gen_concurrency:
                 self.max_gen_concurrency = self._generating
 
     def on_gen_end(self) -> None:
-        """A TG request finished (or errored) generating tokens."""
+        """A request finished (or errored) generating tokens."""
         with self._gen_lock:
             self._generating = max(0, self._generating - 1)
+
+    @property
+    def generation_concurrency(self) -> tuple[int, int]:
+        """Return current and run-wide peak token-producing concurrency."""
+        with self._gen_lock:
+            return self._generating, self.max_gen_concurrency
+
+    @property
+    def run_summary(self) -> RunSummary:
+        """Return a stable snapshot of run-wide request and concurrency counters."""
+        with self._gen_lock:
+            max_concurrency = self.max_gen_concurrency
+        with self._total_lock:
+            return RunSummary(
+                duration_seconds=max(
+                    0.0,
+                    (self._finished_at or time.perf_counter()) - self._start,
+                ),
+                max_concurrency=max_concurrency,
+                request_attempts=self.request_attempts,
+                http_errors=self.http_errors,
+            )
 
     def set_phase(self, label: str, c: int) -> None:
         self.phase = label
@@ -291,8 +353,12 @@ class SwarmUI:
         return t
 
     def _topbar_left(self) -> Text:
+        finished = self._finished_at is not None
         left = Text.assemble(
-            (f"{self.phase}", "bold white"),
+            (
+                self.phase,
+                "bold black on bright_green" if finished else "bold white",
+            ),
             ("   ", ""),
         )
         for c in self.config.concurrency:
@@ -311,33 +377,50 @@ class SwarmUI:
         return left
 
     def _topbar_right(self) -> Text:
-        now = time.time()
+        finished_at = self._finished_at
+        now = finished_at if finished_at is not None else time.perf_counter()
         elapsed = now - self._start
-        tps_total = self.tracker.rate(now)
-        live = sum(1 for a in self.agents if a.snapshot().status == "working")
+        tps_total = 0.0 if finished_at is not None else self.tracker.rate(now)
+        live = (
+            0
+            if finished_at is not None
+            else sum(1 for a in self.agents if a.snapshot().status == "working")
+        )
         # per-request rate = aggregate rate spread over the active runners
         tps_req = tps_total / live if live > 0 else 0.0
-        rps = self.req_tracker.rate(now)
+        rps = 0.0 if finished_at is not None else self.req_tracker.rate(now)
+        current_c, max_c = self.generation_concurrency
+        with self._total_lock:
+            total_tokens = self.total_tokens
+            requests_done = self.requests_done
+            http_errors = self.http_errors
         if self.console.width < 160:
             return Text.assemble(
                 (f"AGENTS {live}", "bold white"),
                 (f"  TOK/S {tps_total:,.0f}", "bold yellow"),
                 (f"  TOK/S·REQ {tps_req:,.0f}", "bold yellow"),
                 (f"  REQ/S {rps:.2f}", "bold green"),
-                (f"  TOK GEN {self.total_tokens:,}", "bold cyan"),
-                (f"  REQ {self.requests_done}", "bold blue"),
-                (f"  MAXC {self.max_gen_concurrency}", "bold red"),
-                (f"  {elapsed:.0f}s", "bold magenta"),
+                (f"  TOK GEN {total_tokens:,}", "bold cyan"),
+                (f"  REQ {requests_done}", "bold blue"),
+                (f"  CURC {current_c}", "bold magenta"),
+                (f"  MAXC {max_c}", "bold red"),
+                (f"  HTTP ERR {http_errors}", "bold red"),
+                (f"  {'DURATION' if finished_at is not None else 'ELAPSED'} {elapsed:.0f}s", "bold magenta"),
             )
         return Text.assemble(
             (f"AGENTS LIVE {live}", "bold white"),
             (f"   TOKENS/SEC (TOTAL) {tps_total:,.0f}", "bold yellow"),
             (f"   TOKENS/SEC (REQ) {tps_req:,.0f}", "bold yellow"),
             (f"   REQ/S (TOTAL) {rps:.2f}", "bold green"),
-            (f"   TOKENS GEN {self.total_tokens:,}", "bold cyan"),
-            (f"   REQ DONE {self.requests_done}", "bold blue"),
-            (f"   MAXC {self.max_gen_concurrency}", "bold red"),
-            (f"   ELAPSED {elapsed:.0f}s", "bold magenta"),
+            (f"   TOKENS GEN {total_tokens:,}", "bold cyan"),
+            (f"   REQ DONE {requests_done}", "bold blue"),
+            (f"   CURRENT CONC {current_c}", "bold magenta"),
+            (f"   MAXC {max_c}", "bold red"),
+            (f"   HTTP ERR {http_errors}", "bold red"),
+            (
+                f"   {'DURATION' if finished_at is not None else 'ELAPSED'} {elapsed:.0f}s",
+                "bold magenta",
+            ),
         )
 
     def _grid(self) -> Table:

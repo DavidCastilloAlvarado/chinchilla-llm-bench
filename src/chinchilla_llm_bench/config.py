@@ -20,7 +20,7 @@ class BenchConfig:
     tg: int = 128
     concurrency: list[int] = field(default_factory=lambda: [1])
     n: int = 5  # repetitions per test: each agent runs n times (total = n x c)
-    temperature: float = 0.0
+    temperature: float | None = None
     timeout: float = 300.0
     seed: int = 1337
     loop: bool = False  # repeat the whole sweep until stopped (toggle with 'l')
@@ -72,7 +72,7 @@ class BenchConfig:
             f"  c        : {' '.join(map(str, self.concurrency))}",
             f"  n        : {self.n} repetitions per test (each agent runs n times)",
             f"  warmup   : {self.warmup} throwaway request(s)",
-            f"  temp     : {self.temperature}",
+            f"  temp     : {self.temperature if self.temperature is not None else 'provider default'}",
             f"  thinking : {'on' if self.thinking else 'off (content only)'}",
             f"  vllm extensions : {'on' if self.vllm_extensions else 'off'}",
             f"  exact_tg : {'on' if self.exact_tg and self.vllm_extensions else 'off'}",

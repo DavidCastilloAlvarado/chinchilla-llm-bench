@@ -6,10 +6,12 @@ import re
 import sys
 
 from rich.console import Console
+from rich.text import Text
 
 from .config import BenchConfig
 from .report import markdown_report, rich_report
 from .runner import BenchRunner
+from .terminal import safe_terminal_text
 from .ui import SwarmUI
 
 
@@ -72,7 +74,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=2,
         help="throwaway requests before measuring, to wake a cold server (default 2)",
     )
-    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="sampling temperature (default: omit and use the provider default)",
+    )
     parser.add_argument("--timeout", type=float, default=300.0, help="per-request timeout (s)")
     parser.add_argument("--seed", type=int, default=1337, help="prompt generation seed")
     parser.add_argument(
@@ -137,6 +144,16 @@ def default_report_path(model: str) -> str:
     return f"model_result_{safe}.txt"
 
 
+def print_labeled(console: Console, label: str, value: object, style: str) -> None:
+    """Print a styled label followed by literal, terminal-safe text."""
+    console.print(
+        Text.assemble(
+            (label, style),
+            (safe_terminal_text(value), ""),
+        )
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     console = Console()
@@ -163,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
             headers=parse_headers(args.header),
         )
     except ValueError as exc:
-        console.print(f"[bold red]invalid settings:[/] {exc}")
+        print_labeled(console, "invalid settings: ", exc, "bold red")
         return 2
 
     ui = SwarmUI(config, quiet=args.no_ui)
@@ -172,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
         phases = runner.run()
     except SystemExit as exc:
         if str(exc):
-            console.print(f"[bold red]{exc}[/]")
+            print_labeled(console, "", exc, "bold red")
         return 1
     except KeyboardInterrupt:
         console.print("[yellow]interrupted[/]")
@@ -181,16 +198,34 @@ def main(argv: list[str] | None = None) -> int:
     console.print()
     console.print(config.summary())
     for warning in runner.warnings:
-        console.print(f"[yellow]warning:[/] {warning}")
+        print_labeled(console, "warning: ", warning, "yellow")
+    request_errors = [
+        request.error
+        for phase in phases
+        for request in phase.requests
+        if request.error is not None
+    ]
+    if request_errors:
+        error_counts: dict[str, int] = {}
+        for error in request_errors:
+            error_counts[error] = error_counts.get(error, 0) + 1
+        for error, count in error_counts.items():
+            print_labeled(
+                console,
+                f"request error ({count}x): ",
+                error,
+                "bold red",
+            )
     if phases:
-        console.print(rich_report(config, phases))
+        summary = ui.run_summary
+        console.print(rich_report(config, phases, summary))
         out = args.output or default_report_path(config.model)
         with open(out, "w", encoding="utf-8") as handle:
-            handle.write(markdown_report(config, phases))
+            handle.write(markdown_report(config, phases, summary))
         console.print(f"[dim]report written to {out}[/]")
     else:
         console.print("[yellow]no completed phases — nothing to report[/]")
-    return 0
+    return 1 if request_errors else 0
 
 
 if __name__ == "__main__":

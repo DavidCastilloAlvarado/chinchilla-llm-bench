@@ -69,6 +69,8 @@ class BenchRunner:
                     self._phase("tg", c)
                 if self.ui.stopped or not self.ui.loop:
                     break
+            if not self.ui.stopped:
+                self.ui.wait_for_exit()
         finally:
             self.ui.stop()
         return self.phases
@@ -125,7 +127,8 @@ class BenchRunner:
         self.ui.set_phase(f"warming up ({cfg.warmup} requests)", 0)
         self.ui.log(f"== warming up server ({cfg.warmup} throwaway requests) ==")
         for _ in range(cfg.warmup):
-            stream_chat(
+            self.ui.on_request_attempt()
+            result = stream_chat(
                 cfg.base_url,
                 cfg.model,
                 "Warmup request, answer with a single word.",
@@ -139,12 +142,14 @@ class BenchRunner:
                 max_completion_tokens=cfg.max_completion_tokens,
                 reasoning_effort=cfg.reasoning_effort,
             )
+            if result.http_status is not None:
+                self.ui.on_http_error()
 
     # --------------------------------------------------------------- latency
     def _latency_probe(self) -> None:
         """Measure network RTT: mean of 3 ``GET /models`` (llama-benchy's
-        'api' latency mode). est_ppt = ttfr - latency removes the round-trip
-        from the prompt-processing time.
+        'api' latency mode). net_ttft = ttft - latency removes the round-trip
+        from the observed time to the first generated token.
         """
         self.ui.set_phase("measuring latency", 0)
         self.ui.log("== measuring network latency (3x GET /models) ==")
@@ -171,15 +176,15 @@ class BenchRunner:
         def execute(agent: Agent, spec: RequestSpec):
             t_start = time.perf_counter() - t_phase0
             gen_started = False
+            self.ui.on_request_attempt()
 
             def on_token(
                 text: str, t_rel: float, kind: str = "content", n_tokens: int = 1
             ):
                 nonlocal gen_started
                 # First streamed token (TTFT): the request is generating now.
-                # Counted only for tg, so MAXC is "really producing tokens
-                # at the same time", excluding prompt processing.
-                if test == "tg" and not gen_started:
+                # Starting here excludes prompt processing from MAXC.
+                if not gen_started:
                     gen_started = True
                     self.ui.on_gen_start()
                 self.ui.on_token(n_tokens)
@@ -206,9 +211,11 @@ class BenchRunner:
                     reasoning_effort=cfg.reasoning_effort,
                 )
             finally:
-                if test == "tg" and gen_started:
+                if gen_started:
                     self.ui.on_gen_end()
             t_end = time.perf_counter() - t_phase0
+            if result.http_status is not None:
+                self.ui.on_http_error()
             if result.error is None:
                 self.ui.on_request_done(result.duration, result.completion_tokens)
             rs = RequestStats(
@@ -274,7 +281,7 @@ class BenchRunner:
     ) -> PhaseStats:
         """Aggregate per-request + per-wave stats (llama-benchy semantics).
 
-        * per request: pp = prompt / est_ppt, tg = (N-1) / (last - first token)
+        * per request: pp = prompt / net_ttft, tg = (N-1) / (last - first token)
         * per wave (one repetition of c concurrent requests):
           pp = sum(prompt) / (max first token - min start),
           tg = sum(N-1) / (max last token - min first token),
@@ -287,18 +294,18 @@ class BenchRunner:
         # -- per-request metrics -------------------------------------------
         req_rates: list[float] = []
         ttfr_vals: list[float] = []
-        est_vals: list[float] = []
+        net_ttft_vals: list[float] = []
         e2e_vals: list[float] = []
         for r in ok:
             if test == "pp":
                 if r.ttfr is not None:
                     ttfr_vals.append(r.ttfr)
-                    est = max(0.0, r.ttfr - latency)
-                    est_vals.append(est)
-                    if est > 0:
-                        req_rates.append(r.prompt_tokens / est)
                 if r.ttft is not None:
                     e2e_vals.append(r.ttft)
+                    net_ttft = max(0.0, r.ttft - latency)
+                    net_ttft_vals.append(net_ttft)
+                    if net_ttft > 0:
+                        req_rates.append(r.prompt_tokens / net_ttft)
             else:
                 n = len(r.token_times)
                 if n > 1 and r.token_times[-1] > r.token_times[0]:
@@ -340,12 +347,11 @@ class BenchRunner:
             peak_rate(r.token_times) for r in ok if len(r.token_times) > 1
         ]
 
-        if c > 1:
-            total_tps = mean_std(wave_totals)
-            req_tps = mean_std(req_rates)
-        else:
-            # single request: the aggregate is the request itself
-            req_tps = mean_std(req_rates)
+        req_tps = mean_std(req_rates)
+        total_tps = mean_std(wave_totals)
+        if test == "tg" and c == 1:
+            # Decode timing begins with the first generated token, so for one
+            # request the wave span and request span are identical.
             total_tps = req_tps
 
         total_tokens = (
@@ -366,6 +372,6 @@ class BenchRunner:
             peak_total=mean_std(peak_total_vals),
             peak_req=mean_std(peak_req_vals),
             ttfr=mean_std(ttfr_vals),
-            est_ppt=mean_std(est_vals),
+            net_ttft=mean_std(net_ttft_vals),
             e2e_ttft=mean_std(e2e_vals),
         )

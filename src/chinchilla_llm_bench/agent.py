@@ -6,6 +6,8 @@ import threading
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from .terminal import safe_terminal_text
+
 ROLES = [
     "coder",
     "researcher",
@@ -87,7 +89,7 @@ class Agent:
 
     def set_prompt(self, prompt: str, prompt_tokens: int) -> None:
         self._set(
-            prompt=prompt,
+            prompt=safe_terminal_text(prompt),
             prompt_tokens=prompt_tokens,
             output="",
             think="",
@@ -97,6 +99,7 @@ class Agent:
         )
 
     def add_token(self, text: str, kind: str = "content", n_tokens: int = 1) -> None:
+        text = safe_terminal_text(text)
         with self._lock:
             self._tokens += n_tokens
             if kind == "think":
@@ -109,7 +112,10 @@ class Agent:
                     self._output = self._output[-9000:]
 
     def finish(self, ok: bool, detail: str) -> None:
-        self._set(status="done" if ok else "error", detail=detail)
+        self._set(
+            status="done" if ok else "error",
+            detail=safe_terminal_text(detail),
+        )
 
     # -- worker -----------------------------------------------------------------
     def start(self, q: "queue.Queue", execute: Callable[["Agent", object], object]) -> None:
@@ -132,7 +138,10 @@ class Agent:
             try:
                 result = execute(self, spec)
             except Exception as exc:  # defensive: never kill the swarm
-                result = _ErrorResult(f"{type(exc).__name__}: {exc}", spec.prompt_tokens)
+                result = _ErrorResult(
+                    safe_terminal_text(f"{type(exc).__name__}: {exc}"),
+                    spec.prompt_tokens,
+                )
             ok = result.error is None
             if ok:
                 detail = f"{result.completion_tokens} tok · {result.duration * 1000:.0f} ms"

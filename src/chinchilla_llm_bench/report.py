@@ -8,8 +8,8 @@ its usage chunk), never from chunk events:
   concurrent requests): prompt tokens / span or decode tokens / span
 * ``t/s (req)`` — per-request tokens/second
 * ``peak t/s`` — max tokens in a 1 s sliding window (per wave / per request)
-* ``ttfr`` / ``est_ppt`` / ``e2e_ttft`` — prompt-processing latencies,
-  where est_ppt = ttfr - measured network latency
+* ``ttfr`` / ``net_ttft`` / ``e2e_ttft`` — prompt-processing latencies,
+  where net_ttft = ttft - measured network latency
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from rich.table import Table
 
 from .config import BenchConfig
 from .runner import PhaseResult
-from .stats import fmt_mean_std, fmt_ms_mean_std
+from .stats import RunSummary, fmt_mean_std, fmt_ms_mean_std
 
 COLUMNS = [
     "model",
@@ -28,7 +28,7 @@ COLUMNS = [
     "peak t/s",
     "peak t/s (req)",
     "ttfr (ms)",
-    "est_ppt (ms)",
+    "net_ttft (ms)",
     "e2e_ttft (ms)",
 ]
 
@@ -36,7 +36,7 @@ COLUMNS = [
 def build_rows(config: BenchConfig, phases: list[PhaseResult]) -> list[list[str]]:
     """One row per (test, concurrency) phase.
 
-    pp rows fill the latency columns (ttfr/est_ppt/e2e_ttft) and leave the
+    pp rows fill the latency columns (ttfr/net_ttft/e2e_ttft) and leave the
     peak columns empty (single token per request — nothing to peak); tg
     rows fill the throughput + peak columns.
     """
@@ -55,7 +55,7 @@ def build_rows(config: BenchConfig, phases: list[PhaseResult]) -> list[list[str]
                     "",
                     "",
                     fmt_ms_mean_std(*s.ttfr),
-                    fmt_ms_mean_std(*s.est_ppt),
+                    fmt_ms_mean_std(*s.net_ttft),
                     fmt_ms_mean_std(*s.e2e_ttft),
                 ]
             )
@@ -76,7 +76,11 @@ def build_rows(config: BenchConfig, phases: list[PhaseResult]) -> list[list[str]
     return rows
 
 
-def markdown_report(config: BenchConfig, phases: list[PhaseResult]) -> str:
+def markdown_report(
+    config: BenchConfig,
+    phases: list[PhaseResult],
+    summary: RunSummary,
+) -> str:
     """Markdown table (first column left-aligned, the rest right-aligned)."""
     lines = [
         "| " + " | ".join(COLUMNS) + " |",
@@ -84,12 +88,36 @@ def markdown_report(config: BenchConfig, phases: list[PhaseResult]) -> str:
     ]
     for row in build_rows(config, phases):
         lines.append("| " + " | ".join(row) + " |")
+    lines.extend(
+        [
+            "",
+            "## Run summary",
+            "",
+            f"- Duration: {summary.duration_label}",
+            f"- Max concurrency: {summary.max_concurrency}",
+            (
+                "- HTTP errors: "
+                f"{summary.http_errors}/{summary.request_attempts} "
+                f"({summary.http_error_percentage:.2f}%)"
+            ),
+        ]
+    )
     return "\n".join(lines) + "\n"
 
 
-def rich_report(config: BenchConfig, phases: list[PhaseResult]) -> Table:
+def rich_report(
+    config: BenchConfig,
+    phases: list[PhaseResult],
+    summary: RunSummary,
+) -> Table:
     """Box-drawn table for the console."""
     table = Table(box=box.HEAVY, title=f"benchmark results · {config.model}")
+    table.caption = (
+        f"DURATION {summary.duration_label}  |  "
+        f"MAX CONCURRENCY {summary.max_concurrency}  |  "
+        f"HTTP ERRORS {summary.http_errors}/{summary.request_attempts} "
+        f"({summary.http_error_percentage:.2f}%)"
+    )
     table.add_column("model", justify="left", style="bold")
     for col in COLUMNS[1:]:
         table.add_column(col, justify="right")

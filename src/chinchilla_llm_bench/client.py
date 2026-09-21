@@ -10,9 +10,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Mapping, Optional
 
-from openai import OpenAI
+from openai import APIStatusError, OpenAI
 
 from .prompt import estimate_tokens
+from .terminal import safe_terminal_text
 
 TokenCallback = Callable[[str, float, str, int], None]  # (text, t_rel, kind, n_tokens)
 TokenCounter = Callable[[str], int]
@@ -56,6 +57,7 @@ class ChatResult:
     token_times: list[float] = field(default_factory=list)  # per-token arrival offsets
     text: str = ""
     error: Optional[str] = None
+    http_status: Optional[int] = None
 
 
 def _delta_text(delta, name: str) -> str | None:
@@ -138,7 +140,7 @@ def stream_chat(
     prompt: str,
     max_tokens: int,
     *,
-    temperature: float = 0.0,
+    temperature: float | None = None,
     timeout: float = 300.0,
     on_token: Optional[TokenCallback] = None,
     thinking: bool = False,
@@ -180,6 +182,8 @@ def stream_chat(
         ] = max_tokens
         if reasoning_effort is not None:
             request_kwargs["reasoning_effort"] = reasoning_effort
+        if temperature is not None:
+            request_kwargs["temperature"] = temperature
         if vllm_extensions:
             extra_body = {
                 "chat_template_kwargs": {"enable_thinking": bool(thinking)},
@@ -192,7 +196,6 @@ def stream_chat(
         stream = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
             stream=True,
             stream_options={"include_usage": True},
             **request_kwargs,
@@ -233,7 +236,9 @@ def stream_chat(
                 if on_token is not None:
                     on_token(piece, now, kind, len(token_ids) if token_ids else 1)
     except Exception as exc:  # surface API/transport errors in the report
-        result.error = f"{type(exc).__name__}: {exc}"
+        result.error = safe_terminal_text(f"{type(exc).__name__}: {exc}")
+        if isinstance(exc, APIStatusError):
+            result.http_status = exc.status_code
     result.duration = time.perf_counter() - t0
     result.text = "".join(pieces)
     total, token_times = _finalize_stream_tokens(content_chunks, usage_completion_tokens)
@@ -257,7 +262,7 @@ def measure_latency(
 ) -> float:
     """Mean RTT of 3 ``GET /models`` probes (llama-benchy's 'api' latency mode).
 
-    Used to subtract network/server round-trip from ttfr -> est_ppt.
+    Used to subtract network/server round-trip from TTFT -> net_ttft.
     """
     client = get_client(base_url, api_key, timeout, headers)
     samples: list[float] = []
