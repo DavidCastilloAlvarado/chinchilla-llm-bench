@@ -40,19 +40,21 @@ carry several tokens:
    `usage.completion_tokens` count is used and timestamps are interpolated
    over the chunk times (last resort: 1 token per chunk).
 3. After the warm-up, network latency is measured as the mean RTT of 3
-   `GET /models` probes (llama-benchy's `api` latency mode). `est_ppt` is
-   `ttfr − latency`, i.e. the time the server actually spent on the prompt.
+   `GET /models` probes (llama-benchy's `api` latency mode). `net_ttft` is
+   `ttft − latency`: a network-adjusted end-to-end time to the first generated
+   token. It still includes gateway/provider scheduling and queue time, so it
+   is not a pure model-only prefill measurement.
 
 ### Report columns
 
 | column | meaning |
 |--------|---------|
-| `t/s (total)` | aggregate tokens/second **per wave**: pp = Σ prompt tokens / (last first-token − first start), tg = Σ decode tokens / (last token − first token) over the wave's c requests. For `c=1` this equals `t/s (req)` |
-| `t/s (req)` | per-request tokens/second: pp = prompt tokens / est_ppt, tg = (N−1) / (last token − first token). Mean ± std over requests |
+| `t/s (total)` | aggregate tokens/second **per wave**: pp = Σ prompt tokens / (last first-token − first start), tg = Σ decode tokens / (last token − first token) over the wave's c requests. This is the gateway's aggregate capacity for the distinct PP and TG workloads. |
+| `t/s (req)` | per-request tokens/second: pp = prompt tokens / net_ttft (queueing + prompt processing before the first generated token), tg = (N−1) / (last token − first token) after generation starts. Mean ± std over requests; PP and TG request rates are not directly comparable. |
 | `peak t/s` | max tokens in a **1 s sliding window** over the wave's merged per-token timestamps (tg only; pp is a single token per request, so there is nothing to peak) |
 | `peak t/s (req)` | same, per request, mean ± std over requests (tg only) |
 | `ttfr (ms)` | time to first response chunk, mean ± std (pp only) |
-| `est_ppt (ms)` | estimated pure prompt-processing time = `ttfr − latency` (pp only) |
+| `net_ttft (ms)` | network-adjusted time to the first generated token = `ttft − latency` (pp only); includes gateway/provider queueing and processing |
 | `e2e_ttft (ms)` | end-to-end time to the first *generated token* as seen by the client (pp only) |
 
 Prompt length is made exact using vLLM's native `POST /tokenize` endpoint when
@@ -72,16 +74,29 @@ While running, the terminal shows a swarm grid — one card per agent:
 - **top bar** = current phase, active concurrency level, `AGENTS LIVE`,
   `TOKENS/SEC (TOTAL)` (aggregate stream rate, real tokens), `TOKENS/SEC (REQ)`
   (per-request generation rate), `REQ/S (TOTAL)` (request completions/s),
-  `TOKENS GEN` (total tokens generated), `REQ DONE`, `MAXC`, `ELAPSED`.
+  `TOKENS GEN` (total tokens generated), `REQ DONE`, `CURRENT CONC`, `MAXC`,
+  `HTTP ERR`, `ELAPSED`.
+  `CURRENT CONC` is the number of requests producing tokens right now.
   `MAXC` is the peak number of requests *generating tokens at the same time*
-  during the tg phase — i.e. the real decode concurrency the server achieves,
-  excluding prompt processing (a server that queues requests will show MAXC
-  well below `--c`).
+  across both benchmark phases — i.e. the real decode concurrency the server
+  achieves, excluding prompt processing (a server that queues requests will
+  show MAXC well below `--c`). `HTTP ERR` is the run-wide number of HTTP 4xx
+  and 5xx responses, including warmup requests.
+
+The terminal and markdown reports end with a run summary containing the total
+benchmark `DURATION`, `MAX CONCURRENCY`, and `HTTP ERRORS
+failed/attempted (percentage)`. Duration covers preflight, warmups, latency
+probes, and all PP/TG phases, but excludes the time spent on the completed
+screen waiting for `q`. Attempted requests include warmups and all PP/TG
+requests, so the percentage uses the same denominator as the live `HTTP ERR`
+counter.
 
 Keys while running: `q` or `s` = stop (reports what finished), `l` = toggle
 loop. When the grid is taller than the terminal it becomes a scroll window
 (the top bar shows e.g. `⌄ 1-3/8 scroll`): scroll with the arrow keys or
 `j`/`k`, page with `PgUp`/`PgDn`, jump to top/bottom with `Home`/`End`.
+After a natural completion, the live screen remains visible until you press
+`q`; `--no-ui` mode exits immediately.
 
 ![The agent-swarm UI mid-run: tg1024 (c4), four agents streaming output, five idle](docs/swarm.png)
 
@@ -124,7 +139,7 @@ uv run chinchilla-bench \
 | `--c` | — | concurrency levels to sweep, e.g. `--c 1 2 3 4` (required) |
 | `--n` | `5` | repetitions per test: each agent runs `n` times (total = `n × c` requests) |
 | `--warmup` | `2` | throwaway requests before measuring, to wake a cold server |
-| `--temperature` | `0.0` | sampling temperature |
+| `--temperature` | provider default | sampling temperature; omitted unless explicitly set |
 | `--timeout` | `300` | per-request timeout (s) |
 | `--seed` | `1337` | prompt-generation seed |
 | `--thinking` | off | enable Qwen3 reasoning; requires `--vllm-extensions` |
@@ -141,9 +156,10 @@ uv run chinchilla-bench \
 ### Which flags for which backend
 
 The default request is a plain, standard OpenAI-compatible one — no vLLM-only
-fields — so it works out of the box with gateways and hosted APIs. The live
-UI also follows models that stream their thinking (as `reasoning_content` or
-`reasoning`) even when no vLLM fields are sent.
+fields and no forced sampling temperature — so it works out of the box with
+gateways and hosted reasoning models that reject non-default temperatures.
+The live UI also follows models that stream their thinking (as
+`reasoning_content` or `reasoning`) even when no vLLM fields are sent.
 
 | Target | Command shape |
 |---|---|
@@ -188,7 +204,7 @@ The run ends with the settings summary and the results table printed to the
 terminal, plus a markdown copy written to `model_result_<model>.txt`:
 
 ```
-| model             |      test |   t/s (total) |    t/s (req) |  peak t/s | peak t/s (req) |      ttfr (ms) |    est_ppt (ms) |   e2e_ttft (ms) |
+| model             |      test |   t/s (total) |    t/s (req) |  peak t/s | peak t/s (req) |      ttfr (ms) |   net_ttft (ms) |   e2e_ttft (ms) |
 |:------------------|----------:|--------------:|-------------:|----------:|---------------:|---------------:|----------------:|----------------:|
 | qwen3.8-27b-nvfp4 | pp200 (c1) | 4448.64 ± 1603.51 | 4448.64 ± 1603.51 |  |  | 144.27 ± 19.48 |  40.72 ± 19.48 | 144.27 ± 19.48 |
 | qwen3.8-27b-nvfp4 | tg128 (c1) |     66.83 ± 5.13 |     66.83 ± 5.13 |  72.0 ± 4.1 |      68.0 ± 5.0 |                |                |                |
@@ -225,12 +241,12 @@ and the report end to end.
 ## Notes
 
 - Any OpenAI-compatible endpoint works (the client is the official `openai`
-  SDK); `est_ppt`, exact prompt sizing and per-chunk token counts are best
+  SDK); `net_ttft`, exact prompt sizing and per-chunk token counts are best
   with vLLM (it serves `/tokenize` and `return_token_ids`). On servers without
   `return_token_ids` the client falls back to the server's usage counts.
 - A warm-up runs before measuring so a cold server (first-request wake-up,
-  CUDA graph builds) doesn't inflate `ttfr`/`est_ppt`; network latency is
-  then probed (3× `GET /models`) and subtracted from `ttfr` for `est_ppt`.
+  CUDA graph builds) doesn't inflate `ttfr`/`ttft`; network latency is then
+  probed (3× `GET /models`) and subtracted from `ttft` for `net_ttft`.
 - Reasoning is disabled by default; a thinking model with a 1-token budget
   would otherwise spend it on reasoning and the prefill test would measure
   nothing.
