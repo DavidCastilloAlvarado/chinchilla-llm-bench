@@ -42,6 +42,13 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"tokens": list(range(len(prompt.split())))})
             return
         if self.path.rstrip("/").endswith("/chat/completions"):
+            chat_status = int(getattr(self.server, "chat_status", 200))
+            if chat_status >= 400:
+                self._send_json(
+                    {"error": {"message": "mock chat rejection", "type": "mock_error"}},
+                    chat_status,
+                )
+                return
             max_tokens = int(body.get("max_completion_tokens", body.get("max_tokens", 8)))
             reasoning = int(getattr(self.server, "reasoning_tokens", 0))
             delay = float(getattr(self.server, "token_delay", 0.002))
@@ -103,6 +110,7 @@ class MockVLLMServer:
         token_ids: bool = True,
         required_header: tuple[str, str] | None = None,
         reasoning_field: str = "reasoning_content",
+        chat_status: int = 200,
     ):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self.server.token_delay = token_delay
@@ -110,6 +118,7 @@ class MockVLLMServer:
         self.server.token_ids = token_ids
         self.server.required_header = required_header
         self.server.reasoning_field = reasoning_field
+        self.server.chat_status = chat_status
         self.server.request_bodies = []
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 

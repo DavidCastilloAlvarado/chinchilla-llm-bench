@@ -1,6 +1,14 @@
-import pytest
+import io
 
-from chinchilla_llm_bench.cli import build_parser, default_report_path, parse_headers
+import pytest
+from rich.console import Console
+
+from chinchilla_llm_bench.cli import (
+    build_parser,
+    default_report_path,
+    parse_headers,
+    print_labeled,
+)
 from chinchilla_llm_bench.config import BenchConfig
 
 
@@ -26,6 +34,7 @@ def test_parser_full_example():
     assert args.max_completion_tokens is False
     assert args.pp_output_tokens == 1
     assert args.reasoning_effort is None
+    assert args.temperature is None
 
 
 def test_parser_accepts_max_completion_tokens():
@@ -48,6 +57,18 @@ def test_parser_accepts_reasoning_settings():
     )
     assert args.pp_output_tokens == 32
     assert args.reasoning_effort == "minimal"
+
+
+def test_parser_accepts_explicit_temperature():
+    args = build_parser().parse_args(
+        [
+            "--base-url", "http://127.0.0.1:8000/v1",
+            "--model", "mock-model",
+            "--c", "1",
+            "--temperature", "0.2",
+        ]
+    )
+    assert args.temperature == 0.2
 
 
 def test_parser_accepts_repeated_headers():
@@ -104,3 +125,18 @@ def test_config_label():
 def test_default_report_path():
     assert default_report_path("qwen3.8-27b-nvfp4") == "model_result_qwen3_8_27b_nvfp4.txt"
     assert default_report_path("a/b c") == "model_result_a_b_c.txt"
+
+
+def test_print_labeled_treats_remote_text_as_literal():
+    output = io.StringIO()
+    console = Console(file=output, force_terminal=False)
+    print_labeled(
+        console,
+        "request error: ",
+        "\x1b[2J[bold green]spoofed[/bold green]\u202e",
+        "bold red",
+    )
+    rendered = output.getvalue()
+    assert "\x1b" not in rendered
+    assert "\u202e" not in rendered
+    assert "[bold green]spoofed[/bold green]" in rendered

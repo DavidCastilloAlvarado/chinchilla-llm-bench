@@ -1,6 +1,9 @@
 """End-to-end test: full sweep against the mock vLLM server."""
+import pytest
+
 from chinchilla_llm_bench.config import BenchConfig
 from chinchilla_llm_bench.runner import BenchRunner
+from chinchilla_llm_bench.stats import RequestStats
 from chinchilla_llm_bench.ui import SwarmUI
 from mock_server import MockVLLMServer
 
@@ -86,7 +89,7 @@ def test_phase_stats_are_sane(mock_server):
     assert pp1.stats.total_tokens == 3 * 10  # 3 requests x 10 prompt tokens
     assert pp1.stats.req_tps[0] > 0
     assert pp1.stats.ttfr[0] > 0
-    assert pp1.stats.est_ppt[0] >= 0
+    assert pp1.stats.net_ttft[0] >= 0
 
     tg1 = phases[1]
     assert tg1.stats.n_ok == 3
@@ -235,8 +238,8 @@ def test_batch_metrics_c2_total_higher_than_req(mock_server):
     assert tg.stats.total_tps[0] > tg.stats.req_tps[0]
 
 
-def test_pp_est_ppt_subtracts_latency(mock_server):
-    """est_ppt = max(0, ttfr - measured network latency) < raw ttfr."""
+def test_pp_net_ttft_subtracts_latency(mock_server):
+    """net_ttft = max(0, ttft - measured network latency)."""
     config = BenchConfig(
         base_url=mock_server.base_url,
         model="mock-model",
@@ -251,6 +254,34 @@ def test_pp_est_ppt_subtracts_latency(mock_server):
     phases = runner.run()
     pp = next(p for p in phases if p.test == "pp")
     assert runner._latency > 0  # latency probe ran
-    assert 0 <= pp.stats.est_ppt[0] < pp.stats.ttfr[0]
+    assert 0 <= pp.stats.net_ttft[0] < pp.stats.e2e_ttft[0]
     assert pp.stats.e2e_ttft[0] > 0
     assert pp.stats.req_tps[0] > 0
+
+
+def test_pp_request_rate_uses_first_token_not_first_response_chunk():
+    config = BenchConfig(
+        base_url="http://127.0.0.1:9/v1",
+        model="mock-model",
+        pp=100,
+        tg=8,
+        concurrency=[1],
+    )
+    runner = BenchRunner(config, SwarmUI(config, quiet=True))
+    runner._latency = 0.1
+    request = RequestStats(
+        agent=1,
+        test="pp",
+        concurrency=1,
+        rep=0,
+        prompt_tokens=100,
+        completion_tokens=1,
+        ttfr=0.2,
+        ttft=1.1,
+        duration=1.2,
+        token_times=[1.1],
+    )
+    stats = runner._summarize("pp", 1, [request], phase_seconds=1.2)
+    assert stats.net_ttft == (1.0, 0.0)
+    assert stats.req_tps == (100.0, 0.0)
+    assert stats.total_tps == pytest.approx((100 / 1.1, 0.0))

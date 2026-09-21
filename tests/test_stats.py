@@ -1,6 +1,7 @@
 from chinchilla_llm_bench.stats import (
     PeakTracker,
     RateTracker,
+    RunSummary,
     fmt_mean_std,
     fmt_ms_mean_std,
     mean_std,
@@ -28,6 +29,12 @@ def test_fmt_mean_std():
 
 def test_fmt_ms_mean_std():
     assert fmt_ms_mean_std(0.14427, 0.01948) == "144.27 ± 19.48"
+
+
+def test_run_summary_duration_label_carries_rounded_seconds():
+    assert RunSummary(59.999, 0, 0, 0).duration_label == "1m 0.00s"
+    assert RunSummary(3599.999, 0, 0, 0).duration_label == "1h 0m 0.00s"
+    assert RunSummary(-1, 0, 0, 0).duration_label == "0.00s"
 
 
 def test_peak_tracker_tracks_peak_and_rate():

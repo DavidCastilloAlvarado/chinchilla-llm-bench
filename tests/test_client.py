@@ -58,6 +58,20 @@ def test_stream_chat_omits_vllm_extensions_by_default(mock_server):
     assert "return_token_ids" not in body
     assert "min_tokens" not in body
     assert "ignore_eos" not in body
+    assert "temperature" not in body
+
+
+def test_stream_chat_sends_explicit_temperature(mock_server):
+    result = stream_chat(
+        mock_server.base_url,
+        "mock-model",
+        "hello",
+        1,
+        temperature=0.2,
+    )
+    assert result.error is None
+    _path, body = mock_server.server.request_bodies[-1]
+    assert body["temperature"] == 0.2
 
 
 def test_stream_chat_sends_vllm_extensions_when_enabled(mock_server):
@@ -222,6 +236,17 @@ def test_stream_chat_counts_reasoning_field_tokens():
 def test_stream_chat_http_error():
     result = stream_chat("http://127.0.0.1:9/v1", "mock-model", "hello", 4, timeout=2)
     assert result.error is not None
+    assert result.http_status is None
+
+
+def test_stream_chat_captures_http_error_status():
+    server = MockVLLMServer(chat_status=429).start()
+    try:
+        result = stream_chat(server.base_url, "mock-model", "hello", 4)
+    finally:
+        server.stop()
+    assert result.error is not None
+    assert result.http_status == 429
 
 
 def test_resolve_tokenizer_uses_vllm_endpoint(mock_server):
